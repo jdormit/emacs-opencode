@@ -1,0 +1,63 @@
+#+TITLE: Emacs OpenCode Architecture
+
+* Overview
+This project provides an Emacs-native client for OpenCode. It can launch and
+control a local OpenCode server, connect to existing servers, and offer a
+chat-first workflow inside Emacs while also supporting integrations with Emacs
+buffers and tools. The design favors thin, composable APIs with minimal local
+state. All session and project metadata are fetched on-demand from the server.
+
+* Core Principles
+- Modular, loosely-coupled architecture.
+- On-demand data: avoid persisting local state when possible.
+- Emacs-first UX: native buffers, commands, and keybindings.
+- Extensible API: list-returning functions power interactive views and external
+  integrations.
+- Server-first: OpenCode server is the source of truth.
+
+* High-Level Architecture
+- Entry point (emacs-opencode.el)
+  - User commands, top-level configuration, session lifecycle orchestration.
+- HTTP client (emacs-opencode-client.el)
+  - Low-level API calls to OpenCode (request.el).
+  - Handles auth headers, base URL, error decoding.
+- Streaming/events (emacs-opencode-stream.el)
+  - SSE event stream to drive incremental output and permission prompts.
+- UI buffers
+  - Chat buffers: Comint-like interaction and streaming output.
+  - Overview buffers: projects/sessions list, backed by list-returning helpers.
+- Integrations
+  - Emacs buffer-aware commands (region/point context).
+  - MCP integration for exposing Emacs to OpenCode tools.
+
+* Data Model Strategy
+- Minimal local cache; fetch data from API per command.
+- Session titles from OpenCode used to name buffers.
+- Overview buffers re-fetch on refresh and support completion frameworks.
+
+* Primary Workflows
+** Start and connect
+- Launch opencode serve subprocess in project directory.
+- Connect to server (health check + optional auth).
+- Create a new session and open a chat buffer named after session title.
+
+** Messaging
+- User sends prompt from chat buffer.
+- Send prompt asynchronously to /session/:id/prompt_async.
+- Stream responses from /event and append to buffer.
+
+** Session management
+- List sessions and projects from the server.
+- Open existing sessions, fork, delete, etc.
+
+* OpenCode API Usage
+- /global/health for connectivity checks.
+- /session for creating and listing sessions.
+- /session/:id/message and /session/:id/prompt_async for prompts.
+- /event for SSE stream of responses and permissions.
+
+* Future Extensions
+- Session overview dashboard grouped by project.
+- Buffer-aware prompt helpers (region, defun, file).
+- Permission prompt UI for tool invocations.
+- MCP integration for Emacs tools.

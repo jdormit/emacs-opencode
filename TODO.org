@@ -1,0 +1,53 @@
+#+TITLE: Emacs OpenCode TODO
+
+* Current Goal: Vertical Slice (Launch → Chat → Stream)
+** DONE Start opencode serve subprocess in CWD
+- Spawn opencode with --serve (or opencode serve) and capture host/port.
+- Track process lifecycle and allow stop/restart.
+
+** DONE Implement minimal HTTP client (request.el)
+- Base URL, health check (/global/health).
+- Create session (/session).
+- Send prompt async (/session/:id/prompt_async).
+
+** TODO Implement SSE stream handling
+- Connect to /event for the active session.
+- Parse SSE frames and extract message parts.
+- Dispatch events to UI and handler registry.
+
+** TODO Create opencode-chat mode
+- Define major mode and buffer layout.
+- Buffer naming uses OpenCode session title.
+- Input submission command to send prompts.
+- Append streaming output as it arrives.
+
+** DONE Implement M-x opencode command
+- Orchestrate server start, health check, session create.
+- Open chat buffer and connect stream.
+
+** DONE Implement shutdown command
+- Interactive completion over active connections.
+- Stop process and clean registry.
+
+* Next Milestones
+** TODO Overview buffers (sessions/projects)
+- List-returning functions for sessions/projects.
+- Thin rendering buffer(s) + completion integration.
+
+** TODO Session management commands
+- Load session, fork, delete, rename.
+
+** TODO Buffer-aware commands
+- Ask about region/point/file context.
+- Apply edits to selection or buffer.
+
+** TODO Emacs tool integration (MCP)
+- Expose Emacs access to OpenCode tools.
+
+** TODO SSE event handlers API
+- Define a handler registry for event types.
+- Dispatch SSE events to named Emacs hooks.
+
+** TODO Auto-reload edited buffers
+- Enable auto-revert or reload on file edit events.
+- Provide opt-in hooks for custom reload behavior.
