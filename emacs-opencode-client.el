@@ -4,6 +4,7 @@
 (require 'request)
 (require 'subr-x)
 (require 'emacs-opencode-connection)
+(require 'emacs-opencode-sse)
 
 (cl-defmethod opencode-request ((conn opencode-connection) method path &rest args &key data parser headers &allow-other-keys)
   "Send a raw HTTP request using CONN.
@@ -34,6 +35,15 @@ ARGS are forwarded to `request`."
    conn
    'GET
    "/global/health"
+   :success success
+   :error error))
+
+(cl-defmethod opencode-client-sessions ((conn opencode-connection) &key success error)
+  "Fetch OpenCode sessions list."
+  (opencode-request
+   conn
+   'GET
+   "/session"
    :success success
    :error error))
 

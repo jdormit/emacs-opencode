@@ -11,7 +11,9 @@
   username
   password
   timeout
-  process)
+  process
+  sse-process
+  sse-state)
 
 
 (defcustom opencode-server-host "127.0.0.1"
