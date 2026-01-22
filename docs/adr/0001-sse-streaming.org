@@ -1,0 +1,26 @@
+#+TITLE: ADR 0001: SSE stream handling
+#+DATE: 2026-01-22
+#+STATUS: Accepted
+
+* Context
+The vertical slice goal requires streaming events from the OpenCode server.
+We need a resilient SSE connection, incremental parsing, and a dispatch
+mechanism that can route events to internal handlers.
+
+* Decision
+- Add a new module: `emacs-opencode-sse.el`.
+- Implement an SSE stream opener that uses `curl` via `make-process` with
+  `-N` (no buffering) for reliable streaming.
+- If `curl` is not available, error with a clear user-facing message.
+- Maintain incremental parsing state for partial lines and in-progress
+  event fields.
+- Dispatch parsed events through a handler registry keyed by event name.
+- Provide a macro for internal handler registration.
+- Do not add a public hook-based API yet; keep the surface minimal and
+  internal.
+
+* Consequences
+- Requires `curl` to be installed for SSE streaming.
+- Adds a dedicated SSE module to keep parsing logic isolated.
+- Handler registry gives predictable, internal routing; external
+  customization can be added later via hooks if needed.
