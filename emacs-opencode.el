@@ -69,6 +69,7 @@ ON-SUCCESS and ON-ERROR are called with request args."
          (connection (opencode--get-connection normalized)))
     (unless connection
       (error "No OpenCode connection registered for %s" normalized))
+    (opencode-sse-close connection)
     (opencode-connection-stop connection)
     (opencode--unregister-connection normalized)
     (message "Stopped OpenCode server for %s" normalized)))
@@ -100,7 +101,8 @@ its server process."
               (opencode--register-connection normalized connection)
               (message "Started OpenCode server for %s" normalized))
             (lambda (&rest _args)
-              (error "OpenCode server failed to become healthy for %s" normalized)))))
+              (error "OpenCode server failed to become healthy for %s" normalized)))
+           (opencode-sse-open connection)))
         (opencode--register-connection normalized connection)
         connection))))
 
