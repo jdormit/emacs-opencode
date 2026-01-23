@@ -14,7 +14,14 @@
   :group 'emacs-opencode)
 
 (defvar opencode-sse--handlers nil
-  "Alist mapping SSE event names to handler functions.")
+  "Alist mapping SSE event names to handler lists.")
+
+(defun opencode-sse--add-handler (event handler)
+  "Register HANDLER for SSE EVENT if not already present."
+  (let ((current (alist-get event opencode-sse--handlers nil nil #'string=)))
+    (unless (memq handler current)
+      (setf (alist-get event opencode-sse--handlers nil nil #'string=)
+            (cons handler current)))))
 
 (defmacro opencode-sse-define-handler (event args &rest body)
   "Define and register an SSE handler for EVENT.
@@ -27,14 +34,14 @@ Returns the created function symbol."
        (defun ,fn-name ,args
         ,(format "Handle SSE event %s." event)
         ,@body)
-       (setf (alist-get ,event opencode-sse--handlers nil nil #'string=) #',fn-name)
+       (opencode-sse--add-handler ,event #',fn-name)
        #',fn-name)))
 
 (defun opencode-sse-register-handler (event handler)
   "Register HANDLER for SSE EVENT.
 
 EVENT is a string. HANDLER receives EVENT and DATA." 
-  (setf (alist-get event opencode-sse--handlers nil nil #'string=) handler))
+  (opencode-sse--add-handler event handler))
 
 (defun opencode-sse-unregister-handler (event)
   "Remove any handler registered for EVENT." 
@@ -43,8 +50,9 @@ EVENT is a string. HANDLER receives EVENT and DATA."
 
 (defun opencode-sse--dispatch (event data)
   "Dispatch EVENT and DATA to registered handlers."
-  (when-let ((handler (alist-get event opencode-sse--handlers nil nil #'string=)))
-    (funcall handler event data)))
+  (let ((handlers (alist-get event opencode-sse--handlers nil nil #'string=)))
+    (dolist (handler handlers)
+      (funcall handler event data))))
 
 (defun opencode-sse--decode-data (data)
   "Decode DATA from JSON.
