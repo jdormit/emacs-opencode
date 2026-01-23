@@ -23,13 +23,13 @@
       (setf (alist-get event opencode-sse--handlers nil nil #'string=)
             (cons handler current)))))
 
-(defmacro opencode-sse-define-handler (event args &rest body)
-  "Define and register an SSE handler for EVENT.
+(defmacro opencode-sse-define-handler (name event args &rest body)
+  "Define and register an SSE handler for EVENT named NAME.
 
 ARGS and BODY are passed to `defun`. EVENT is the SSE event name string.
 Returns the created function symbol."
   (declare (indent defun))
-  (let ((fn-name (intern (format "opencode-sse--on-%s" event))))
+  (let ((fn-name (intern (format "opencode-sse--%s-handler" name))))
     `(progn
        (defun ,fn-name ,args
         ,(format "Handle SSE event %s." event)
@@ -43,8 +43,8 @@ Returns the created function symbol."
 EVENT is a string. HANDLER receives EVENT and DATA." 
   (opencode-sse--add-handler event handler))
 
-(defun opencode-sse-unregister-handler (event)
-  "Remove any handler registered for EVENT." 
+(defun opencode-sse-unregister-handlers (event)
+  "Remove all handlers registered for EVENT."
   (setq opencode-sse--handlers
         (assoc-delete-all event opencode-sse--handlers)))
 
