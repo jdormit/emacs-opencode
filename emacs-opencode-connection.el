@@ -67,7 +67,7 @@ updated CONNECTION."
          (command (list opencode-server-command "serve"
                         "--hostname" hostname
                         "--port" (number-to-string port)))
-         (buffer (get-buffer-create (format "*opencode-server<%s>*" default-directory)))
+         (buffer (get-buffer-create (format " *opencode-server<%s>*" default-directory)))
          (process (apply #'start-process "opencode-server" buffer command)))
     (set-process-filter
      process

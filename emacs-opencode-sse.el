@@ -150,7 +150,7 @@ Signals an error when DATA is not valid JSON."
 
 Returns the streaming process." 
   (opencode-sse--ensure-curl)
-  (let* ((buffer (get-buffer-create (format "*opencode-sse<%s>*"
+  (let* ((buffer (get-buffer-create (format " *opencode-sse<%s>*"
                                             (opencode-connection-directory connection))))
          (command (opencode-sse--build-command connection))
          (process (make-process

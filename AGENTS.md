@@ -48,7 +48,7 @@ No Cursor rules (`.cursor/rules/` or `.cursorrules`) or GitHub Copilot rules
 
 - Prefix public symbols with `opencode-` and internal helpers with `opencode--`.
 - Use full, descriptive names (`opencode-connection-start`, not abbreviations).
-- Keep buffer names consistent with existing patterns (e.g., `*opencode-server<...>*`).
+- Keep buffer names consistent with existing patterns (e.g., ` *opencode-server<...>*`).
 
 ### Imports and Requires
 
