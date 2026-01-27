@@ -3,6 +3,8 @@
 (require 'cl-lib)
 (require 'emacs-opencode-connection)
 (require 'emacs-opencode-client)
+(require 'emacs-opencode-session)
+(require 'emacs-opencode-session-mode)
 
 (defgroup emacs-opencode nil
   "Emacs client for the OpenCode server."
@@ -55,6 +57,36 @@ ON-SUCCESS and ON-ERROR are called with request args."
   (opencode-connection-stop connection)
   (error "OpenCode server did not become ready within %ss" opencode-ready-timeout))
 
+(defun opencode--session-from-info (info)
+  "Create a session object from INFO."
+  (let* ((time (alist-get 'time info))
+         (created (alist-get 'created time))
+         (updated (alist-get 'updated time)))
+    (opencode-session-create
+     :id (alist-get 'id info)
+     :slug (alist-get 'slug info)
+     :version (alist-get 'version info)
+     :project-id (alist-get 'projectID info)
+     :directory (alist-get 'directory info)
+     :title (alist-get 'title info)
+     :time-created created
+     :time-updated updated
+     :summary (alist-get 'summary info)
+     :info info)))
+
+(defun opencode--session-label (info &optional include-identifiers)
+  "Return a display label for session INFO.
+
+When INCLUDE-IDENTIFIERS is non-nil, include slug and ID." 
+  (let ((title (or (alist-get 'title info) "Untitled session"))
+        (slug (alist-get 'slug info))
+        (session-id (alist-get 'id info)))
+    (if include-identifiers
+        (concat title
+                (when slug (format " (%s)" slug))
+                (when session-id (format " [%s]" session-id)))
+      title)))
+
 ;;;###autoload
 (defun opencode-shutdown (directory)
   "Stop OpenCode server for DIRECTORY and remove it from the registry."
@@ -105,6 +137,65 @@ its server process."
            (opencode-sse-open connection)))
         (opencode--register-connection normalized connection)
         connection))))
+
+;;;###autoload
+(defun opencode-new-session (directory)
+  "Create a new session for DIRECTORY and open its buffer." 
+  (interactive (list (read-directory-name "OpenCode directory: " default-directory nil t)))
+  (let* ((normalized (opencode--normalize-directory directory))
+         (connection (opencode--get-connection normalized)))
+    (unless connection
+      (setq connection (opencode normalized)))
+    (opencode-request
+     connection
+     'POST
+     "/session"
+     :data `(("directory" . ,normalized))
+     :success (lambda (&rest args)
+                (let* ((data (plist-get args :data))
+                       (info (alist-get 'info (alist-get 'properties data)))
+                       (session (opencode--session-from-info info)))
+                  (opencode-session-open session connection)))
+     :error (lambda (&rest _args)
+              (error "Failed to create OpenCode session")))))
+
+;;;###autoload
+(defun opencode-open-session (directory)
+  "Prompt for a session in DIRECTORY and open its buffer." 
+  (interactive (list (read-directory-name "OpenCode directory: " default-directory nil t)))
+  (let* ((normalized (opencode--normalize-directory directory))
+         (connection (opencode--get-connection normalized)))
+    (unless connection
+      (setq connection (opencode normalized)))
+    (opencode-client-sessions
+     connection
+     :success (lambda (&rest args)
+                (let* ((data (plist-get args :data))
+                       (items (if (listp data)
+                                  (alist-get 'sessions data)
+                                data))
+                       (items-list (cond
+                                    ((vectorp items) (append items nil))
+                                    ((listp items) items)
+                                    (t nil)))
+                       (counts (make-hash-table :test 'equal))
+                       (choices (mapcar (lambda (item)
+                                          (let* ((title (opencode--session-label item))
+                                                 (count (1+ (gethash title counts 0))))
+                                            (puthash title count counts)))
+                                        items-list))
+                       (choices (mapcar (lambda (item)
+                                          (let* ((title (opencode--session-label item))
+                                                 (ambiguous (> (gethash title counts 0) 1))
+                                                 (label (opencode--session-label item ambiguous)))
+                                            (cons label item)))
+                                        items-list))
+                       (selected (completing-read "OpenCode session: " choices nil t))
+                       (info (cdr (assoc selected choices)))
+                       (session (opencode--session-from-info info)))
+                  (opencode-session-open session connection)))
+     :error (lambda (&rest _args)
+              (error "Failed to fetch OpenCode sessions")))))
 
 
 (provide 'emacs-opencode)

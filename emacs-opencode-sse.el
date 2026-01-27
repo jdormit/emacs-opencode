@@ -34,7 +34,7 @@ Returns the created function symbol."
        (defun ,fn-name ,args
         ,(format "Handle SSE event %s." event)
         ,@body)
-       (opencode-sse--add-handler ,event #',fn-name)
+       (opencode-sse-register-handler ,event #',fn-name)
        #',fn-name)))
 
 (defun opencode-sse-register-handler (event handler)
