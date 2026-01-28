@@ -86,3 +86,4 @@ Example SSE:
 #+begin_src 
 data: {"type":"todo.updated","properties":{"sessionID":"ses_3fabc1211ffecnI8SVTEFxUGDf","todos":[{"id":"1","content":"Review session/mode SSE handling spots","status":"completed","priority":"high"},{"id":"2","content":"Design plan/build mode state + header","status":"in_progress","priority":"high"},{"id":"3","content":"Plan tool-part rendering + diff display","status":"pending","priority":"high"},{"id":"4","content":"Plan file event handlers + buffer revert","status":"pending","priority":"high"},{"id":"5","content":"Update TODO.org milestones","status":"pending","priority":"medium"}]}}
 #+end_src
+* TODO Handle permission requests
