@@ -7,28 +7,7 @@ and consistent with existing files (`emacs-opencode.el`, `emacs-opencode-connect
 ## Build, Lint, Test
 
 No explicit build, lint, or test scripts were found in the repo (no Makefile,
-package metadata, or test files). Use the following Emacs-centric commands when
-needed.
-
-### Byte-compile (batch)
-
-- Compile all Elisp in the repo:
-  `emacs -Q --batch -L . -f batch-byte-compile emacs-opencode.el emacs-opencode-connection.el emacs-opencode-client.el`
-
-### Lint (optional)
-
-- If `package-lint` is installed locally:
-  `emacs -Q --batch -L . -l package-lint -f package-lint-batch-and-exit emacs-opencode.el`
-- If `elint` is available:
-  `emacs -Q --batch -L . -f elint-batch emacs-opencode.el`
-
-### Tests (template)
-
-- No tests currently exist. If tests are added, prefer ERT.
-- Run all ERT tests (example):
-  `emacs -Q --batch -L . -l test/opencode-test.el -f ert-run-tests-batch-and-exit`
-- Run a single test (example):
-  `emacs -Q --batch -L . -l test/opencode-test.el -f ert-run-tests-batch-and-exit --eval '(ert-run-tests-batch "test-name")'`
+package metadata, or test files).
 
 ## Cursor / Copilot Rules
 
