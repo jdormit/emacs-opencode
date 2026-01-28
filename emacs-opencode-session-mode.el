@@ -70,8 +70,7 @@ Each function receives SESSION and INPUT as arguments.")
   "Major mode for OpenCode session buffers."
   (setq-local buffer-read-only nil)
   (setq-local opencode-session--messages nil)
-  (opencode-session--ensure-markers)
-  (add-hook 'post-command-hook #'opencode-session--enforce-input nil t))
+  (opencode-session--ensure-markers))
 
 (defun opencode-session-open (session &optional connection)
   "Open a session buffer for SESSION and return it.
@@ -294,12 +293,6 @@ Restores INPUT when the request fails."
   (let ((inhibit-read-only t))
     (delete-region (marker-position opencode-session--input-marker) (point-max)))
   (opencode-session--goto-input))
-
-(defun opencode-session--enforce-input ()
-  "Ensure point stays in the input region." 
-  (when (and opencode-session--input-marker
-             (< (point) (marker-position opencode-session--input-marker)))
-    (opencode-session--goto-input)))
 
 (defun opencode-session--find-message (message-id)
   "Return the message with MESSAGE-ID, if any." 
