@@ -15,7 +15,9 @@
   snapshot
   reason
   cost
-  tokens)
+  tokens
+  tool
+  state)
 
 (cl-defstruct (opencode-message (:constructor opencode-message-create))
   "Structured representation of an OpenCode message."

@@ -11,6 +11,7 @@
   username
   password
   timeout
+  agents
   process
   sse-process
   sse-state)

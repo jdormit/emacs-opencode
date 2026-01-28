@@ -65,15 +65,26 @@ LIMIT restricts the number of returned messages when provided."
    :success success
    :error error))
 
-(cl-defmethod opencode-client-session-prompt-async ((conn opencode-connection) session-id parts &key success error)
+(cl-defmethod opencode-client-agents ((conn opencode-connection) &key success error)
+  "Fetch available agents from the server."
+  (opencode-request
+   conn
+   'GET
+   "/agent"
+   :success success
+   :error error))
+
+(cl-defmethod opencode-client-session-prompt-async ((conn opencode-connection) session-id parts &key success error agent)
   "Send PARTS to SESSION-ID asynchronously.
 
-PARTS is a list of message part objects for the request body." 
+PARTS is a list of message part objects for the request body. AGENT is
+included when provided." 
   (opencode-request
    conn
    'POST
    (format "/session/%s/prompt_async" session-id)
-   :json `((parts . ,parts))
+   :json (append (when agent `((agent . ,agent)))
+                 `((parts . ,parts)))
    :parser (lambda () nil)
    :success success
    :error error))
