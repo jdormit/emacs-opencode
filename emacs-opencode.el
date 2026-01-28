@@ -1,6 +1,7 @@
 ;;; emacs-opencode.el --- OpenCode entrypoint  -*- lexical-binding: t; -*-
 
 (require 'cl-lib)
+(require 'project)
 (require 'emacs-opencode-connection)
 (require 'emacs-opencode-client)
 (require 'emacs-opencode-session)
@@ -87,6 +88,21 @@ When INCLUDE-IDENTIFIERS is non-nil, include slug and ID."
                 (when session-id (format " [%s]" session-id)))
       title)))
 
+(defun opencode--project-directory ()
+  "Return the current project root directory, if any."
+  (when-let ((project (project-current)))
+    (project-root project)))
+
+(defun opencode--read-directory (prompt)
+  "Read a directory using PROMPT, honoring the current project.
+
+When the current buffer is in a project, use its root as the default
+and skip prompting unless a prefix arg is supplied."
+  (if current-prefix-arg
+      (read-directory-name prompt default-directory nil t)
+    (or (opencode--project-directory)
+        (read-directory-name prompt default-directory nil t))))
+
 ;;;###autoload
 (defun opencode-shutdown (directory)
   "Stop OpenCode server for DIRECTORY and remove it from the registry."
@@ -112,7 +128,7 @@ When INCLUDE-IDENTIFIERS is non-nil, include slug and ID."
 
 When a connection already exists for DIRECTORY, reuse it without restarting
 its server process."
-  (interactive (list (read-directory-name "OpenCode directory: " default-directory nil t)))
+  (interactive (list (opencode--read-directory "OpenCode directory: ")))
   (let* ((normalized (opencode--normalize-directory directory))
          (existing (opencode--get-connection normalized)))
     (if existing
@@ -141,7 +157,7 @@ its server process."
 ;;;###autoload
 (defun opencode-new-session (directory)
   "Create a new session for DIRECTORY and open its buffer." 
-  (interactive (list (read-directory-name "OpenCode directory: " default-directory nil t)))
+  (interactive (list (opencode--read-directory "OpenCode directory: ")))
   (let* ((normalized (opencode--normalize-directory directory))
          (connection (opencode--get-connection normalized)))
     (unless connection
@@ -161,7 +177,7 @@ its server process."
 ;;;###autoload
 (defun opencode-open-session (directory)
   "Prompt for a session in DIRECTORY and open its buffer." 
-  (interactive (list (read-directory-name "OpenCode directory: " default-directory nil t)))
+  (interactive (list (opencode--read-directory "OpenCode directory: ")))
   (let* ((normalized (opencode--normalize-directory directory))
          (connection (opencode--get-connection normalized)))
     (unless connection
@@ -176,26 +192,25 @@ its server process."
                        (items-list (cond
                                     ((vectorp items) (append items nil))
                                     ((listp items) items)
-                                    (t nil)))
-                       (counts (make-hash-table :test 'equal))
-                       (choices (mapcar (lambda (item)
-                                          (let* ((title (opencode--session-label item))
-                                                 (count (1+ (gethash title counts 0))))
-                                            (puthash title count counts)))
-                                        items-list))
-                       (choices (mapcar (lambda (item)
-                                          (let* ((title (opencode--session-label item))
-                                                 (ambiguous (> (gethash title counts 0) 1))
-                                                 (label (opencode--session-label item ambiguous)))
-                                            (cons label item)))
-                                        items-list))
-                       (selected (completing-read "OpenCode session: " choices nil t))
-                       (data (cdr (assoc selected choices)))
-                       (session (opencode--session-from-data data)))
-                  (opencode-session-open session connection)))
+                                    (t nil))
+                                   (counts (make-hash-table :test 'equal))
+                                   (choices (mapcar (lambda (item)
+                                                      (let* ((title (opencode--session-label item))
+                                                             (count (1+ (gethash title counts 0))))
+                                                        (puthash title count counts)))
+                                                    items-list))
+                                   (choices (mapcar (lambda (item)
+                                                      (let* ((title (opencode--session-label item))
+                                                             (ambiguous (> (gethash title counts 0) 1))
+                                                             (label (opencode--session-label item ambiguous)))
+                                                        (cons label item)))
+                                                    items-list))
+                                   (selected (completing-read "OpenCode session: " choices nil t))
+                                   (data (cdr (assoc selected choices)))
+                                   (session (opencode--session-from-data data)))
+                       (opencode-session-open session connection))))
      :error (lambda (&rest _args)
               (error "Failed to fetch OpenCode sessions")))))
-
 
 (provide 'emacs-opencode)
 
