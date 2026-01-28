@@ -61,6 +61,14 @@ CLOSED: [2026-01-28 Wed 12:53]
 - Ask about region/point/file context.
 - Apply edits to selection or buffer.
 
+The interface for this is something like: an opencode-ask command, which when run in a buffer asks for a prompt, then sends that prompt to a new opencode session for the project the buffer is in (prompting for a directory to run opencode in if the buffer is not in a project).
+
+The prompt will embed some context around point (or the region if there is one).
+
+This will require building out some additional functionality:
+- a function to open a new opencode session with a prompt that intelligently finds/starts the opencode connection
+- (optional) a minor mode with keybindings for the in-buffer contextual commands
+
 * TODO Emacs tool integration (MCP)
 - Expose Emacs access to OpenCode tools.
 
@@ -87,3 +95,5 @@ Example SSE:
 data: {"type":"todo.updated","properties":{"sessionID":"ses_3fabc1211ffecnI8SVTEFxUGDf","todos":[{"id":"1","content":"Review session/mode SSE handling spots","status":"completed","priority":"high"},{"id":"2","content":"Design plan/build mode state + header","status":"in_progress","priority":"high"},{"id":"3","content":"Plan tool-part rendering + diff display","status":"pending","priority":"high"},{"id":"4","content":"Plan file event handlers + buffer revert","status":"pending","priority":"high"},{"id":"5","content":"Update TODO.org milestones","status":"pending","priority":"medium"}]}}
 #+end_src
 * TODO Handle permission requests
+* TODO Make the session buffer look pretty
+With colors!
