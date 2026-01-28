@@ -238,12 +238,12 @@ When CONNECTION is provided, load existing session messages."
   (let ((inhibit-read-only t))
     (save-excursion
       (goto-char (marker-position opencode-session--input-start-marker))
+      (opencode-session--collapse-tool-separator message)
       (let ((start (point)))
         (insert text)
         (let ((end (point)))
           (setf (opencode-message-start-marker message) (copy-marker start))
           (setf (opencode-message-end-marker message) (copy-marker end)))
-        (insert "\n\n")
         (set-marker opencode-session--input-start-marker (point))
         (set-marker opencode-session--input-marker (point))
         (opencode-session--apply-message-properties start (point) face)))))
@@ -265,7 +265,7 @@ When CONNECTION is provided, load existing session messages."
   (let ((segments (delq nil (mapcar (lambda (part)
                                       (opencode-session--render-message-part message (cdr part)))
                                     parts))))
-    (string-join segments "\n")))
+    (apply #'concat segments)))
 
 (defun opencode-session--render-message-part (message part)
   "Render a single message PART for MESSAGE."
@@ -273,10 +273,11 @@ When CONNECTION is provided, load existing session messages."
     (cond
      ((string= part-type "text")
       (let ((text (or (opencode-message-part-text part) ""))
+            (synthetic (opencode-message-part-synthetic part))
+            (ignored (opencode-message-part-ignored part))
             (face (opencode-session--role-face message)))
-        (when (string-empty-p text)
-          (setq text ""))
-        (propertize text 'face face)))
+        (unless (or synthetic ignored (string-empty-p (string-trim text)))
+          (propertize (concat text "\n\n") 'face face))))
      ((string= part-type "tool")
       (opencode-session--tool-part-line part))
      (t nil))))
@@ -289,7 +290,7 @@ When CONNECTION is provided, load existing session messages."
          (metadata (alist-get 'metadata state))
          (status (or (alist-get 'status state) "pending"))
          (text (opencode-session--tool-summary tool input metadata status state)))
-    (propertize text 'face 'opencode-session-tool-face)))
+    (propertize (concat text "\n") 'face 'opencode-session-tool-face)))
 
 (defun opencode-session--tool-summary (tool input metadata status state)
   "Return the formatted summary for TOOL using INPUT and METADATA.
@@ -330,7 +331,7 @@ Returns a multi-line string."
              (content (or (alist-get 'content todo) ""))
              (marker (opencode-session--todo-marker status)))
         (push (format "[%s] %s" marker content) lines)))
-    (string-join (nreverse lines) "\n")))
+    (format "%s\n" (string-join (nreverse lines) "\n"))))
 
 (defun opencode-session--tool-extract-todos (input metadata)
   "Return todo list items from INPUT or METADATA." 
@@ -621,6 +622,8 @@ Restores INPUT when the request fails."
      :type (alist-get 'type info)
      :text (alist-get 'text info)
      :metadata (alist-get 'metadata info)
+     :synthetic (alist-get 'synthetic info)
+     :ignored (alist-get 'ignored info)
      :time-start start
      :time-end end
      :snapshot (alist-get 'snapshot info)

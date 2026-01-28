@@ -10,6 +10,8 @@
   type
   text
   metadata
+  synthetic
+  ignored
   time-start
   time-end
   snapshot
