@@ -4,6 +4,9 @@ This repository is a small Emacs Lisp client for OpenCode. Keep changes minimal
 and consistent with existing files (`emacs-opencode.el`, `emacs-opencode-connection.el`,
 `emacs-opencode-client.el`).
 
+## Docs and references
+There is a local copy of opencode itself at ~/opencode - you can reference it when needed to discover HTTP endpoint interfaces or look at the existing TUI behavior. Opencode docs are available at https://opencode.ai/docs.
+
 ## Build, Lint, Test
 
 No explicit build, lint, or test scripts were found in the repo (no Makefile,
