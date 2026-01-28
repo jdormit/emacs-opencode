@@ -57,22 +57,22 @@ ON-SUCCESS and ON-ERROR are called with request args."
   (opencode-connection-stop connection)
   (error "OpenCode server did not become ready within %ss" opencode-ready-timeout))
 
-(defun opencode--session-from-info (info)
-  "Create a session object from INFO."
-  (let* ((time (alist-get 'time info))
+(defun opencode--session-from-data (data)
+  "Create a session object from DATA."
+  (let* ((time (alist-get 'time data))
          (created (alist-get 'created time))
          (updated (alist-get 'updated time)))
     (opencode-session-create
-     :id (alist-get 'id info)
-     :slug (alist-get 'slug info)
-     :version (alist-get 'version info)
-     :project-id (alist-get 'projectID info)
-     :directory (alist-get 'directory info)
-     :title (alist-get 'title info)
+     :id (alist-get 'id data)
+     :slug (alist-get 'slug data)
+     :version (alist-get 'version data)
+     :project-id (alist-get 'projectID data)
+     :directory (alist-get 'directory data)
+     :title (alist-get 'title data)
      :time-created created
      :time-updated updated
-     :summary (alist-get 'summary info)
-     :info info)))
+     :summary (alist-get 'summary data)
+     :info data)))
 
 (defun opencode--session-label (info &optional include-identifiers)
   "Return a display label for session INFO.
@@ -153,8 +153,7 @@ its server process."
      :data `(("directory" . ,normalized))
      :success (lambda (&rest args)
                 (let* ((data (plist-get args :data))
-                       (info (alist-get 'info (alist-get 'properties data)))
-                       (session (opencode--session-from-info info)))
+                       (session (opencode--session-from-data data)))
                   (opencode-session-open session connection)))
      :error (lambda (&rest _args)
               (error "Failed to create OpenCode session")))))
@@ -191,8 +190,8 @@ its server process."
                                             (cons label item)))
                                         items-list))
                        (selected (completing-read "OpenCode session: " choices nil t))
-                       (info (cdr (assoc selected choices)))
-                       (session (opencode--session-from-info info)))
+                       (data (cdr (assoc selected choices)))
+                       (session (opencode--session-from-data data)))
                   (opencode-session-open session connection)))
      :error (lambda (&rest _args)
               (error "Failed to fetch OpenCode sessions")))))
