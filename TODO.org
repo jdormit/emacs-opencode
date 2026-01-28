@@ -1,6 +1,6 @@
 #+TITLE: Emacs OpenCode TODO
 
-* Current Goal: Vertical Slice (Launch → Chat → Stream)
+* DONE Current Goal: Vertical Slice (Launch → Chat → Stream)
 ** DONE Start opencode serve subprocess in CWD
 - Spawn opencode with --serve (or opencode serve) and capture host/port.
 - Track process lifecycle and allow stop/restart.
@@ -10,12 +10,12 @@
 - Create session (/session).
 - Send prompt async (/session/:id/prompt_async).
 
-** TODO Implement SSE stream handling
+** DONE Implement SSE stream handling
 - Connect to /event for the active session.
 - Parse SSE frames and extract message parts.
 - Dispatch events to UI and handler registry.
 
-** TODO Create opencode-chat mode
+** DONE Create opencode-session mode
 - Define major mode and buffer layout.
 - Buffer naming uses OpenCode session title.
 - Input submission command to send prompts.
@@ -29,25 +29,60 @@
 - Interactive completion over active connections.
 - Stop process and clean registry.
 
-* Next Milestones
-** TODO Overview buffers (sessions/projects)
+* DONE Agent selection + header indicator
+CLOSED: [2026-01-28 Wed 12:53]
+- Track available agents on connection.
+- Buffer-local agent state in session mode (select + cycle commands).
+- Show active agent in session header.
+- Send agent name with prompt requests.
+
+* DONE Render tool parts
+CLOSED: [2026-01-28 Wed 11:10]
+- Render message parts with type "tool" in the session buffer.
+- Include tool name, status, and output summary.
+
+* TODO Handle session.diff messages
+- Show each session.diff payload inside the message list.
+- Provide a dedicated diff UI rendering (mirrors TUI behavior).
+
+* DONE Auto-reload edited buffers
+CLOSED: [2026-01-28 Wed 12:53]
+- Register global handlers for file.edited and file.watcher.updated.
+- Revert visiting buffers when their file is updated.
+
+* TODO Overview buffers (sessions/projects)
 - List-returning functions for sessions/projects.
 - Thin rendering buffer(s) + completion integration.
 
-** TODO Session management commands
+* TODO Session management commands
 - Load session, fork, delete, rename.
 
-** TODO Buffer-aware commands
+* TODO Buffer-aware commands
 - Ask about region/point/file context.
 - Apply edits to selection or buffer.
 
-** TODO Emacs tool integration (MCP)
+* TODO Emacs tool integration (MCP)
 - Expose Emacs access to OpenCode tools.
 
-** TODO SSE event handlers API
+* DONE SSE event handlers API
+CLOSED: [2026-01-28 Wed 10:54]
 - Define a handler registry for event types.
 - Dispatch SSE events to named Emacs hooks.
 
-** TODO Auto-reload edited buffers
-- Enable auto-revert or reload on file edit events.
-- Provide opt-in hooks for custom reload behavior.
+* TODO Handle question functionality
+- question.asked SSE
+- should prompt the user in emacs via completing-read, with an option to type your own answer
+
+Example SSE:
+#+begin_src 
+data: {"type":"question.asked","properties":{"id":"que_c055308d8001R7q6izrlXP4nzo","sessionID":"ses_3faad41e4ffe8JF0e2lLG0y24o","questions":[{"question":"For tool parts rendering, do you want them inline with message text or as a distinct block (e.g., `[tool]` header + status/output)?","header":"Tool UI","options":[{"label":"Distinct block (Recommended)","description":"Render tool parts as separate block below message content."},{"label":"Inline text","description":"Mix tool info into the message text flow."},{"label":"Other","description":"Specify custom formatting or placement."}]},{"question":"Should tool output be fully rendered or summarized (e.g., first line + truncated)?","header":"Output","options":[{"label":"Summarized (Recommended)","description":"Show brief output with truncation indicator."},{"label":"Full output","description":"Render full tool output in buffer."},{"label":"Other","description":"Specify custom truncation rules."}]}],"tool":{"messageID":"msg_c0552ed20002Z70IEWVcsE36dF","callID":"call_twQ1UXrHcS2qpL0epHDBKXsw"}}}
+#+end_src
+
+* TODO Handle todo list functionality
+- todo.updated SSE
+- should show the todo list with done items checked off
+
+Example SSE:
+#+begin_src 
+data: {"type":"todo.updated","properties":{"sessionID":"ses_3fabc1211ffecnI8SVTEFxUGDf","todos":[{"id":"1","content":"Review session/mode SSE handling spots","status":"completed","priority":"high"},{"id":"2","content":"Design plan/build mode state + header","status":"in_progress","priority":"high"},{"id":"3","content":"Plan tool-part rendering + diff display","status":"pending","priority":"high"},{"id":"4","content":"Plan file event handlers + buffer revert","status":"pending","priority":"high"},{"id":"5","content":"Update TODO.org milestones","status":"pending","priority":"medium"}]}}
+#+end_src
