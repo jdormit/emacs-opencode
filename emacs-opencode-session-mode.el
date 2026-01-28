@@ -134,19 +134,19 @@ When CONNECTION is provided, load existing session messages."
 (defun opencode-session-self-insert (n)
   "Insert N characters into the session input area."
   (interactive "p")
-  (opencode-session--goto-input)
+  (opencode-session--maybe-goto-input)
   (self-insert-command n))
 
 (defun opencode-session-yank (arg)
   "Yank ARG into the session input area."
   (interactive "P")
-  (opencode-session--goto-input)
+  (opencode-session--maybe-goto-input)
   (yank arg))
 
 (defun opencode-session-delete-backward (arg)
   "Delete ARG characters backward inside the input area."
   (interactive "p")
-  (opencode-session--goto-input)
+  (opencode-session--maybe-goto-input)
   (backward-delete-char-untabify arg))
 
 (defun opencode-session--ensure-markers ()
@@ -313,6 +313,17 @@ When CONNECTION is provided, load existing session messages."
     (let ((input-pos (marker-position opencode-session--input-marker)))
       (when (< (point) input-pos)
         (goto-char input-pos)))))
+
+(defun opencode-session--maybe-goto-input ()
+  "Move point to input when outside the input markers."
+  (if (and opencode-session--input-start-marker
+           opencode-session--input-marker)
+      (let ((start (marker-position opencode-session--input-start-marker))
+            (end (marker-position opencode-session--input-marker)))
+        (when (or (< (point) start)
+                  (> (point) end))
+          (opencode-session--goto-input)))
+    (opencode-session--goto-input)))
 
 (defun opencode-session--current-input ()
   "Return current input contents as a string."
