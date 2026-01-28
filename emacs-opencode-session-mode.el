@@ -48,11 +48,11 @@ Each function receives SESSION and INPUT as arguments.")
 (defvar-local opencode-session--connection nil
   "Connection used for the current session buffer.")
 
-(defvar-local opencode-session--input-marker nil
+(defvar-local opencode-session--input-start-marker nil
   "Marker indicating the start of the input region.")
 
-(defvar-local opencode-session--header-marker nil
-  "Marker indicating the end of the header region.")
+(defvar-local opencode-session--input-marker nil
+  "Marker indicating the end of the input region.")
 
 (defvar opencode-session-mode-map
   (let ((map (make-sparse-keymap)))
@@ -125,11 +125,11 @@ When CONNECTION is provided, load existing session messages."
   (backward-delete-char-untabify arg))
 
 (defun opencode-session--ensure-markers ()
-  "Ensure input and header markers exist."
+  "Ensure input markers exist."
+  (unless opencode-session--input-start-marker
+    (setq-local opencode-session--input-start-marker (copy-marker (point-max))))
   (unless opencode-session--input-marker
-    (setq-local opencode-session--input-marker (copy-marker (point-max) t)))
-  (unless opencode-session--header-marker
-    (setq-local opencode-session--header-marker (copy-marker (point-min)))))
+    (setq-local opencode-session--input-marker (copy-marker (point-max) t))))
 
 (defun opencode-session--register-buffer (session buffer)
   "Register BUFFER for SESSION." 
@@ -154,25 +154,12 @@ When CONNECTION is provided, load existing session messages."
   (let* ((title (or (opencode-session-title opencode-session--session)
                     "OpenCode Session"))
          (status (or (opencode-session-status opencode-session--session)
-                     "idle"))
-         (header (concat (propertize title 'face 'opencode-session-header-face)
-                         " "
-                         (propertize (format "[%s]" status)
-                                     'face 'opencode-session-status-face)
-                         "\n")))
-    (opencode-session--replace-header header)))
-
-(defun opencode-session--replace-header (text)
-  "Replace the header region with TEXT." 
-  (let ((inhibit-read-only t))
-    (save-excursion
-      (goto-char (point-min))
-      (when opencode-session--header-marker
-        (delete-region (point-min) (marker-position opencode-session--header-marker)))
-      (let ((start (point)))
-        (insert text)
-        (add-text-properties start (point)
-                             '(read-only t front-sticky t rear-nonsticky t))))))
+                     "idle")))
+    (setq header-line-format
+          (concat (propertize title 'face 'opencode-session-header-face)
+                  " "
+                  (propertize (format "[%s]" status)
+                              'face 'opencode-session-status-face)))))
 
 (defun opencode-session--render-messages ()
   "Render all messages for the session." 
@@ -201,7 +188,6 @@ When CONNECTION is provided, load existing session messages."
       (delete-region (marker-position start) (marker-position end))
       (let ((new-start (point)))
         (insert text)
-        (insert "\n\n")
         (let ((new-end (point)))
           (set-marker start new-start)
           (set-marker end new-end)
@@ -212,14 +198,15 @@ When CONNECTION is provided, load existing session messages."
   "Insert MESSAGE with TEXT and FACE at the end of the log." 
   (let ((inhibit-read-only t))
     (save-excursion
-      (goto-char (marker-position opencode-session--input-marker))
+      (goto-char (marker-position opencode-session--input-start-marker))
       (let ((start (point)))
         (insert text)
         (let ((end (point)))
           (setf (opencode-message-start-marker message) (copy-marker start))
-          (setf (opencode-message-end-marker message) (copy-marker end))
-          (set-marker opencode-session--input-marker end))
+          (setf (opencode-message-end-marker message) (copy-marker end)))
         (insert "\n\n")
+        (set-marker opencode-session--input-start-marker (point))
+        (set-marker opencode-session--input-marker (point))
         (add-text-properties start (point)
                              `(read-only t face ,face front-sticky t rear-nonsticky t))))))
 
@@ -261,8 +248,8 @@ When CONNECTION is provided, load existing session messages."
 (defun opencode-session--current-input ()
   "Return current input contents as a string." 
   (if opencode-session--input-marker
-      (buffer-substring-no-properties (marker-position opencode-session--input-marker)
-                                      (point-max))
+      (buffer-substring-no-properties (marker-position opencode-session--input-start-marker)
+                                      (marker-position opencode-session--input-marker))
     ""))
 
 (defun opencode-session--send-input (connection session input)
@@ -291,7 +278,8 @@ Restores INPUT when the request fails."
 (defun opencode-session--clear-input ()
   "Clear the input region." 
   (let ((inhibit-read-only t))
-    (delete-region (marker-position opencode-session--input-marker) (point-max)))
+    (delete-region (marker-position opencode-session--input-start-marker)
+                   (marker-position opencode-session--input-marker)))
   (opencode-session--goto-input))
 
 (defun opencode-session--find-message (message-id)
