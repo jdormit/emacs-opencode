@@ -1,8 +1,14 @@
 ;;; emacs-opencode-sse.el --- OpenCode SSE handling  -*- lexical-binding: t; -*-
 
 (require 'cl-lib)
+(require 'json)
 (require 'subr-x)
 (require 'emacs-opencode-connection)
+
+(defun opencode--json-read ()
+  "Read JSON from the current buffer with JSON false mapped to nil."
+  (let ((json-false nil))
+    (json-read)))
 
 (defgroup emacs-opencode nil
   "Emacs client for the OpenCode server."
@@ -62,7 +68,7 @@ Signals an error when DATA is not valid JSON."
       (with-temp-buffer
         (insert data)
         (goto-char (point-min))
-        (json-read))
+        (opencode--json-read))
     (error "OpenCode SSE payload is not valid JSON: %s"
            (error-message-string err))))
 

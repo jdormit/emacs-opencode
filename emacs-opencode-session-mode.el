@@ -282,16 +282,195 @@ When CONNECTION is provided, load existing session messages."
      (t nil))))
 
 (defun opencode-session--tool-part-line (part)
-  "Render a tool call PART as a single line."
-  (let* ((state (opencode-message-part-state part))
+  "Render a tool call PART as a formatted line or block."
+  (let* ((tool (opencode-message-part-tool part))
+         (state (opencode-message-part-state part))
          (input (alist-get 'input state))
+         (metadata (alist-get 'metadata state))
+         (status (or (alist-get 'status state) "pending"))
+         (text (opencode-session--tool-summary tool input metadata status state)))
+    (propertize text 'face 'opencode-session-tool-face)))
+
+(defun opencode-session--tool-summary (tool input metadata status state)
+  "Return the formatted summary for TOOL using INPUT and METADATA.
+
+STATUS and STATE provide additional context for fallbacks." 
+  (cond
+   ((string= tool "todowrite")
+    (opencode-session--tool-todos "# Todos" input metadata))
+   ((string= tool "todoread")
+    (opencode-session--tool-todos "# Todos" input metadata))
+   ((string= tool "glob")
+    (opencode-session--tool-glob input metadata))
+   ((string= tool "grep")
+    (opencode-session--tool-grep input metadata))
+   ((string= tool "read")
+    (opencode-session--tool-read input))
+   ((string= tool "bash")
+    (opencode-session--tool-bash input metadata))
+   ((string= tool "edit")
+    (opencode-session--tool-edit-write "Edit" input metadata))
+   ((string= tool "write")
+    (opencode-session--tool-edit-write "Write" input metadata))
+   ((string= tool "task")
+    (opencode-session--tool-task input metadata))
+   ((string= tool "webfetch")
+    (opencode-session--tool-webfetch input))
+   (t
+    (opencode-session--tool-generic tool input status state))))
+
+(defun opencode-session--tool-todos (title input metadata)
+  "Render todo list TITLE using INPUT and METADATA.
+
+Returns a multi-line string." 
+  (let* ((todos (opencode-session--tool-extract-todos input metadata))
+         (lines (list title)))
+    (dolist (todo todos)
+      (let* ((status (alist-get 'status todo))
+             (content (or (alist-get 'content todo) ""))
+             (marker (opencode-session--todo-marker status)))
+        (push (format "[%s] %s" marker content) lines)))
+    (string-join (nreverse lines) "\n")))
+
+(defun opencode-session--tool-extract-todos (input metadata)
+  "Return todo list items from INPUT or METADATA." 
+  (let ((todos (or (alist-get 'todos metadata)
+                   (alist-get 'todos input))))
+    (cond
+     ((vectorp todos) (append todos nil))
+     ((listp todos) todos)
+     (t nil))))
+
+(defun opencode-session--todo-marker (status)
+  "Return a checkbox marker for STATUS." 
+  (cond
+   ((string= status "completed") "✓")
+   ((string= status "in_progress") "•")
+   (t " ")))
+
+(defun opencode-session--tool-glob (input metadata)
+  "Render a summary line for the glob tool." 
+  (let* ((pattern (alist-get 'pattern input))
+         (path (alist-get 'path input))
+         (count (alist-get 'count metadata))
+         (truncated (alist-get 'truncated metadata))
+         (location (opencode-session--format-location path))
+         (matches (opencode-session--format-count count truncated))
+         (pattern-text (opencode-session--format-quoted pattern)))
+    (string-join
+     (delq nil (list "✱ Glob" pattern-text location matches))
+     " ")))
+
+(defun opencode-session--tool-grep (input metadata)
+  "Render a summary line for the grep tool."
+  (let* ((pattern (alist-get 'pattern input))
+         (path (alist-get 'path input))
+         (include (alist-get 'include input))
+         (matches (alist-get 'matches metadata))
+         (truncated (alist-get 'truncated metadata))
+         (location (opencode-session--format-location path))
+         (match-text (opencode-session--format-count matches truncated))
+         (pattern-text (opencode-session--format-quoted pattern))
+         (args (opencode-session--format-args (delq nil (list (when include
+                                                                (format "include=%s" include)))))))
+    (string-join
+     (delq nil (list "✱ Grep" pattern-text location args match-text))
+     " ")))
+
+(defun opencode-session--tool-read (input)
+  "Render a summary line for the read tool." 
+  (let* ((file-path (or (alist-get 'filePath input) ""))
+         (offset (alist-get 'offset input))
+         (limit (alist-get 'limit input))
+         (args (opencode-session--format-args
+                (delq nil (list (when offset (format "offset=%s" offset))
+                                (when limit (format "limit=%s" limit))))))
+         (path (or (opencode-session--display-path file-path) "")))
+    (format "→ Read %s%s" path (if args (concat " " args) ""))))
+
+(defun opencode-session--tool-bash (input metadata)
+  "Render a summary line for the bash tool." 
+  (let* ((description (or (alist-get 'description input)
+                          (alist-get 'description metadata)))
+         (command (alist-get 'command input)))
+    (cond
+     (description (format "✱ Shell %s" description))
+     (command (format "✱ Shell %s" command))
+     (t "✱ Shell"))))
+
+(defun opencode-session--tool-edit-write (label input metadata)
+  "Render a summary line for edit or write LABEL.
+
+INPUT and METADATA may include the file path." 
+  (let* ((file-path (or (alist-get 'filePath input)
+                        (alist-get 'filepath metadata)
+                        ""))
+         (path (or (opencode-session--display-path file-path) "")))
+    (format "→ %s %s" label path)))
+
+(defun opencode-session--tool-task (input metadata)
+  "Render a summary line for the task tool." 
+  (let* ((subagent (or (alist-get 'subagent_type input)
+                       (alist-get 'subagent-type input)
+                       "task"))
          (description (or (alist-get 'description input)
+                          (alist-get 'title metadata)))
+         (agent-label (format "%s Agent" (capitalize subagent))))
+    (if (and description (not (string-empty-p description)))
+        (format "✱ %s %s" agent-label description)
+      (format "✱ %s" agent-label))))
+
+(defun opencode-session--tool-webfetch (input)
+  "Render a summary line for the webfetch tool." 
+  (let* ((url (alist-get 'url input))
+         (format-type (alist-get 'format input))
+         (args (opencode-session--format-args
+                (delq nil (list (when format-type (format "format=%s" format-type)))))))
+    (string-join
+     (delq nil (list "✱ Webfetch" url args "↗"))
+     " ")))
+
+(defun opencode-session--tool-generic (tool input status state)
+  "Render a fallback summary line for TOOL.
+
+INPUT, STATUS, and STATE provide context for the description." 
+  (let* ((description (or (alist-get 'description input)
                           (alist-get 'title state)
-                          (opencode-message-part-tool part)
+                          tool
                           "tool"))
-         (status (or (alist-get 'status state) "pending")))
-    (propertize (format "%s [%s]" description status)
-                'face 'opencode-session-tool-face)))
+         (suffix (and status (format "[%s]" status))))
+    (string-join (delq nil (list (format "✱ %s" description) suffix)) " ")))
+
+(defun opencode-session--display-path (path)
+  "Return PATH formatted for display." 
+  (when (and path (stringp path))
+    (let ((directory (and opencode-session--connection
+                          (opencode-connection-directory opencode-session--connection))))
+      (if (and directory (file-name-absolute-p path))
+          (file-relative-name path directory)
+        path))))
+
+(defun opencode-session--format-location (path)
+  "Format PATH as a location suffix." 
+  (when (and path (stringp path))
+    (format "in %s" (opencode-session--display-path path))))
+
+(defun opencode-session--format-count (count truncated)
+  "Format COUNT and TRUNCATED into a match suffix." 
+  (when (numberp count)
+    (format "(%s matches)" (if truncated (format "%s+" count) count))))
+
+(defun opencode-session--format-args (args)
+  "Format ARGS list into a bracket suffix." 
+  (when (and args (listp args))
+    (let ((clean (delq nil args)))
+      (when clean
+        (format "[%s]" (string-join clean ", "))))))
+
+(defun opencode-session--format-quoted (value)
+  "Quote VALUE for display when present." 
+  (when (and value (stringp value))
+    (format "\"%s\"" value)))
 
 (defun opencode-session--role-face (message)
   "Return the face for MESSAGE role."

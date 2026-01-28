@@ -7,6 +7,8 @@
 (require 'emacs-opencode-connection)
 (require 'emacs-opencode-sse)
 
+(declare-function opencode--json-read "emacs-opencode-sse")
+
 (cl-defmethod opencode-request ((conn opencode-connection) method path &rest args &key data json parser headers &allow-other-keys)
   "Send a raw HTTP request using CONN.
 
@@ -29,7 +31,7 @@ ARGS are forwarded to `request`."
      url
      :type (symbol-name method)
      :data (or payload data)
-     :parser (or parser #'json-read)
+     :parser (or parser #'opencode--json-read)
      :headers merged-headers
      :auth auth
      :timeout (or (opencode-connection-timeout conn) 10)
