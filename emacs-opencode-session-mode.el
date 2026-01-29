@@ -139,9 +139,9 @@ request completes."
       (setq-local opencode-session--session session)
       (setq-local opencode-session--connection connection)
       (opencode-session--register-buffer session buffer)
-      (opencode-session--render-buffer)
       (when connection
-        (opencode-session--ensure-agents connection)))
+        (opencode-session--ensure-agents connection))
+      (opencode-session--render-buffer))
     (if (and connection (opencode-session-id session))
         (opencode-session--load-history connection session buffer on-history-loaded)
       (when on-history-loaded
@@ -861,18 +861,21 @@ PREVIOUS-NAME is the previous buffer name to compare against."
 (defun opencode-session--maybe-fetch-agents (connection)
   "Fetch and cache agents for CONNECTION when needed." 
   (unless (opencode-connection-agents connection)
-    (opencode-client-agents
-     connection
-     :success (lambda (&rest args)
-                (let* ((data (plist-get args :data))
-                       (agents (opencode-session--normalize-agents data)))
-                  (setf (opencode-connection-agents connection) agents)
-                  (opencode-session--apply-default-agent connection)))
-     :error (lambda (&rest _args)
-              (message "OpenCode: failed to load agents")))))
+    (let ((session-buffer (current-buffer)))
+      (opencode-client-agents
+       connection
+       :success (lambda (&rest args)
+                  (let* ((data (plist-get args :data))
+                         (agents (opencode-session--normalize-agents data)))
+                    (setf (opencode-connection-agents connection) agents)
+                    (when (buffer-live-p session-buffer)
+                      (with-current-buffer session-buffer
+                        (opencode-session--apply-default-agent connection)))))
+       :error (lambda (&rest _args)
+                (error "OpenCode: failed to load agents"))))))
 
 (defun opencode-session--apply-default-agent (connection)
-  "Apply the default agent for the current session buffer." 
+  "Apply the default agent for the current session buffer."
   (when (and (eq connection opencode-session--connection)
              (not opencode-session--agent))
     (let ((agents (opencode-connection-agents connection)))
