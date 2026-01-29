@@ -100,6 +100,7 @@ Each function receives SESSION and INPUT as arguments.")
     (define-key map (kbd "C-c C-n") #'opencode-session-next-agent)
     (define-key map (kbd "C-c C-p") #'opencode-session-previous-agent)
     (define-key map (kbd "C-c C-r") #'opencode-session-refresh-agents)
+    (define-key map (kbd "C-c C-k") #'opencode-session-interrupt)
     (define-key map (kbd "S-TAB") #'opencode-session-previous-agent)
     (define-key map (kbd "<backtab>") #'opencode-session-previous-agent)
     (define-key map (kbd "RET") #'newline)
@@ -950,6 +951,22 @@ PREVIOUS-NAME is the previous buffer name to compare against."
   (unless opencode-session--connection
     (error "OpenCode session is not connected"))
   (opencode-session--refresh-agents opencode-session--connection))
+
+(defun opencode-session-interrupt ()
+  "Interrupt the active prompt for the current session." 
+  (interactive)
+  (unless (and opencode-session--connection opencode-session--session)
+    (error "OpenCode session is not connected"))
+  (let ((session-id (opencode-session-id opencode-session--session)))
+    (unless session-id
+      (error "OpenCode session ID is missing"))
+    (opencode-client-session-abort
+     opencode-session--connection
+     session-id
+     :success (lambda (&rest _args)
+                (message "OpenCode: interrupt requested"))
+     :error (lambda (&rest _args)
+              (message "OpenCode: failed to interrupt session")))))
 
 (defun opencode-session--handle-session-idle (_event data)
   "Handle the session.idle SSE DATA."

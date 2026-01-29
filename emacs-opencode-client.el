@@ -91,6 +91,15 @@ included when provided."
    :success success
    :error error))
 
+(cl-defmethod opencode-client-session-abort ((conn opencode-connection) session-id &key success error)
+  "Abort the active prompt for SESSION-ID." 
+  (opencode-request
+   conn
+   'POST
+   (format "/session/%s/abort" session-id)
+   :parser (lambda () nil)
+   :success success
+   :error error))
 
 (provide 'emacs-opencode-client)
 
