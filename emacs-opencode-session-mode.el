@@ -98,10 +98,12 @@ Each function receives SESSION and INPUT as arguments.")
   (setq-local opencode-session--agent-index nil)
   (opencode-session--ensure-markers))
 
-(defun opencode-session-open (session &optional connection)
+(defun opencode-session-open (session &optional connection on-history-loaded)
   "Open a session buffer for SESSION and return it.
 
-When CONNECTION is provided, load existing session messages." 
+When CONNECTION is provided, load existing session messages. If
+ON-HISTORY-LOADED is non-nil, call it with BUFFER after the history
+request completes."
   (let* ((name (opencode-session--buffer-name session))
          (buffer (get-buffer-create name)))
     (with-current-buffer buffer
@@ -112,10 +114,26 @@ When CONNECTION is provided, load existing session messages."
       (opencode-session--render-buffer)
       (when connection
         (opencode-session--ensure-agents connection)))
-    (when (and connection (opencode-session-id session))
-      (opencode-session--load-history connection session buffer))
+    (if (and connection (opencode-session-id session))
+        (opencode-session--load-history connection session buffer on-history-loaded)
+      (when on-history-loaded
+        (funcall on-history-loaded buffer)))
     (pop-to-buffer buffer)
     buffer))
+
+;;;###autoload
+(defun opencode-session-insert-input (input)
+  "Insert INPUT into the session input area."
+  (unless (derived-mode-p 'opencode-session-mode)
+    (error "Not in an OpenCode session buffer"))
+  (opencode-session--ensure-markers)
+  (opencode-session--ensure-input-region)
+  (let ((inhibit-read-only t))
+    (delete-region (marker-position opencode-session--input-start-marker)
+                   (marker-position opencode-session--input-marker))
+    (goto-char (marker-position opencode-session--input-marker))
+    (insert input))
+  (opencode-session--goto-input))
 
 (defun opencode-session-send-input ()
   "Send the current input region content."
@@ -934,8 +952,10 @@ Returns nil when PATH is not a string."
   (dolist (path (opencode-session--event-file-paths data))
     (opencode-session--maybe-revert-buffer path)))
 
-(defun opencode-session--load-history (connection session buffer)
-  "Load existing messages for SESSION using CONNECTION into BUFFER."
+(defun opencode-session--load-history (connection session buffer &optional on-history-loaded)
+  "Load existing messages for SESSION using CONNECTION into BUFFER.
+
+Call ON-HISTORY-LOADED with BUFFER after the request completes."
   (opencode-client-session-messages
    connection
    (opencode-session-id session)
@@ -950,9 +970,13 @@ Returns nil when PATH is not a string."
                     (setq opencode-session--messages nil)
                     (dolist (item items)
                       (opencode-session--hydrate-message item))
-                    (opencode-session--render-buffer)))))
+                    (opencode-session--render-buffer))
+                  (when on-history-loaded
+                    (funcall on-history-loaded buffer)))))
    :error (lambda (&rest _args)
-            (message "OpenCode: failed to load session history"))))
+            (message "OpenCode: failed to load session history")
+            (when on-history-loaded
+              (funcall on-history-loaded buffer)))))
 
 (defun opencode-session--hydrate-message (item)
   "Add a message ITEM returned from the API." 

@@ -20,6 +20,9 @@
 (defvar opencode--connections (make-hash-table :test 'equal)
   "Registry mapping directories to OpenCode connections.")
 
+(defvar opencode--prompt-history nil
+  "History list for OpenCode prompts.")
+
 (defun opencode--normalize-directory (directory)
   "Normalize DIRECTORY for registry lookups."
   (file-name-as-directory (expand-file-name directory)))
@@ -161,7 +164,7 @@ once the server is ready."
 
 ;;;###autoload
 (defun opencode-new-session (directory)
-  "Create a new session for DIRECTORY and open its buffer." 
+  "Create a new session for DIRECTORY and open its buffer."
   (interactive (list (opencode--read-directory "OpenCode directory: ")))
   (let ((normalized (opencode--normalize-directory directory)))
     (opencode
@@ -176,6 +179,35 @@ once the server is ready."
                    (let* ((data (plist-get args :data))
                           (session (opencode--session-from-data data)))
                      (opencode-session-open session connection)))
+        :error (lambda (&rest _args)
+                 (error "Failed to create OpenCode session")))))))
+
+;;;###autoload
+(defun opencode-ask (directory prompt)
+  "Create a new session for DIRECTORY and send PROMPT."
+  (interactive
+   (list (opencode--read-directory "OpenCode directory: ")
+         (read-from-minibuffer "OpenCode prompt: " nil nil nil
+                               'opencode--prompt-history)))
+  (let ((normalized (opencode--normalize-directory directory)))
+    (opencode
+     normalized
+     (lambda (connection)
+       (opencode-request
+        connection
+        'POST
+        "/session"
+        :data `(("directory" . ,normalized))
+        :success (lambda (&rest args)
+                  (let* ((data (plist-get args :data))
+                         (session (opencode--session-from-data data)))
+                    (opencode-session-open
+                     session
+                     connection
+                     (lambda (buffer)
+                       (with-current-buffer buffer
+                         (opencode-session-insert-input prompt)
+                         (opencode-session-send-input))))))
         :error (lambda (&rest _args)
                  (error "Failed to create OpenCode session")))))))
 
