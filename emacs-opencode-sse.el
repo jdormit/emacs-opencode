@@ -7,8 +7,13 @@
 
 (defun opencode--json-read ()
   "Read JSON from the current buffer with JSON false mapped to nil."
-  (let ((json-false nil))
-    (json-read)))
+  (if (fboundp 'json-parse-buffer)
+      (json-parse-buffer :object-type 'alist
+                         :array-type 'list
+                         :null-object nil
+                         :false-object nil)
+    (let ((json-false nil))
+      (json-read))))
 
 (defgroup emacs-opencode nil
   "Emacs client for the OpenCode server."
@@ -62,8 +67,12 @@ EVENT is a string. HANDLER receives EVENT and DATA."
 (defun opencode-sse--dispatch (event data)
   "Dispatch EVENT and DATA to registered handlers."
   (let ((handlers (alist-get event opencode-sse--handlers nil nil #'string=)))
-    (dolist (handler handlers)
-      (funcall handler event data))))
+    (run-at-time
+     0 nil
+     (lambda (event data handlers)
+       (dolist (handler handlers)
+         (funcall handler event data)))
+     event data handlers)))
 
 (defun opencode-sse--decode-data (data)
   "Decode DATA from JSON.
@@ -139,11 +148,13 @@ Signals an error when DATA is not valid JSON."
   (let ((data (opencode-sse--read-state connection :data)))
     (opencode-sse--clear-event connection)
     (when data
-      (let* ((payload (opencode-sse--decode-data data))
-             (event (alist-get 'type payload nil nil #'string=)))
-        (unless event
-          (error "OpenCode SSE payload missing type field"))
-        (opencode-sse--dispatch event payload)))))
+      ;; We don't use session.diff events and they can have enormous payloads, so skip parsing them altogether
+      (unless (string-prefix-p "{\"type\":\"session.diff\"," data)
+        (let* ((payload (opencode-sse--decode-data data))
+               (event (alist-get 'type payload nil nil #'string=)))
+          (unless event
+            (error "OpenCode SSE payload missing type field"))
+          (opencode-sse--dispatch event payload))))))
 
 (defun opencode-sse--process-line (connection line)
   "Process LINE in SSE parser CONNECTION state."
