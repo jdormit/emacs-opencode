@@ -32,6 +32,11 @@
   "Face used for session status text."
   :group 'emacs-opencode)
 
+(defface opencode-session-agent-face
+  '((t :inherit (mode-line-emphasis success) :weight bold))
+  "Face used for the active agent label."
+  :group 'emacs-opencode)
+
 (defface opencode-session-tool-face
   '((t :inherit shadow))
   "Face used for tool call lines."
@@ -177,7 +182,7 @@ request completes."
 (defun opencode-session--buffer-name (session)
   "Return a buffer name for SESSION."
   (let ((title (string-trim (or (opencode-session-title session) ""))))
-    (format "*opencode-session<%s>*"
+    (format "*OpenCode: %s*"
             (if (string-empty-p title)
                 (or (opencode-session-slug session)
                     (opencode-session-id session)
@@ -215,7 +220,7 @@ request completes."
           (concat (propertize title 'face 'opencode-session-header-face)
                   (when agent-label
                     (concat " "
-                            (propertize agent-label 'face 'opencode-session-status-face)))
+                            (propertize agent-label 'face 'opencode-session-agent-face)))
                   " "
                   (propertize (format "[%s]" status)
                               'face 'opencode-session-status-face)))))
