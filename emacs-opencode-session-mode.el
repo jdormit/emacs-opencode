@@ -23,6 +23,11 @@
   :type 'number
   :group 'emacs-opencode)
 
+(defcustom opencode-session-default-agent "plan"
+  "Default agent name for new OpenCode sessions."
+  :type 'string
+  :group 'emacs-opencode)
+
 (defface opencode-session-user-face
   '((t :inherit default))
   "Face used for user messages."
@@ -880,9 +885,14 @@ PREVIOUS-NAME is the previous buffer name to compare against."
              (not opencode-session--agent))
     (let ((agents (opencode-connection-agents connection)))
       (when (and agents (listp agents))
-        (setq-local opencode-session--agent (car agents))
-        (setq-local opencode-session--agent-index 0)
-        (opencode-session--render-header)))))
+        (let* ((preferred opencode-session-default-agent)
+               (index (and preferred
+                           (cl-position preferred agents :test #'string=)))
+               (agent (if index (nth index agents) (car agents)))
+               (final-index (or index 0)))
+          (setq-local opencode-session--agent agent)
+          (setq-local opencode-session--agent-index final-index)
+          (opencode-session--render-header))))))
 
 (defun opencode-session--ensure-agents (connection)
   "Ensure agent list is available for CONNECTION."
