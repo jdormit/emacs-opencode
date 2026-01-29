@@ -2,6 +2,7 @@
 
 (require 'cl-lib)
 (require 'project)
+(require 'subr-x)
 (require 'emacs-opencode-connection)
 (require 'emacs-opencode-client)
 (require 'emacs-opencode-session)
@@ -210,6 +211,69 @@ once the server is ready."
                          (opencode-session-send-input))))))
         :error (lambda (&rest _args)
                  (error "Failed to create OpenCode session")))))))
+
+(defun opencode--contextual-snippet ()
+  "Return contextual buffer text and metadata.
+
+When the region is active, use its contents. Otherwise, return the 10 lines
+surrounding point (five before and five after). Insert an inline marker at
+point in the snippet. When the buffer visits a file, include file name and
+line number metadata. Returns nil when no context can be collected."
+  (let* ((has-region (use-region-p))
+         (start (if has-region
+                    (region-beginning)
+                  (save-excursion
+                    (forward-line -5)
+                    (line-beginning-position))))
+         (end (if has-region
+                  (region-end)
+                (save-excursion
+                  (forward-line 5)
+                  (line-end-position))))
+         (context (buffer-substring-no-properties start end))
+         (marker "<<< point >>>")
+         (relative (max 0 (min (length context) (- (point) start))))
+         (context-with-point (concat (substring context 0 relative)
+                                     marker
+                                     (substring context relative)))
+         (start-line (line-number-at-pos start))
+         (end-line (line-number-at-pos end))
+         (file (buffer-file-name))
+         (file-line (line-number-at-pos (point))))
+    (when (string-empty-p (string-trim context))
+      (setq context-with-point nil))
+    (when context-with-point
+      (if file
+          (format "File: %s\nLines: %d-%d (point %d)\n\nNote: %s marks the point.\n\n%s"
+                  (file-name-nondirectory file)
+                  start-line
+                  end-line
+                  file-line
+                  marker
+                  context-with-point)
+        (format "Note: %s marks the point.\n\n%s"
+                marker
+                context-with-point)))))
+
+;;;###autoload
+(defun opencode-ask-contextual (directory prompt)
+  "Create a new session for DIRECTORY and send PROMPT with context.
+
+If a region is active, use its contents as context. Otherwise include the 10
+lines around point (five before and five after). When the buffer visits a
+file, include the file name and relevant line numbers."
+  (interactive
+   (list (opencode--read-directory "OpenCode directory: ")
+         (read-from-minibuffer "OpenCode prompt: " nil nil nil
+                               'opencode--prompt-history)))
+  (let* ((normalized (opencode--normalize-directory directory))
+         (context (opencode--contextual-snippet))
+         (final-prompt (if context
+                           (format "```\n%s\n```\n\n%s"
+                                   context
+                                   prompt)
+                         prompt)))
+    (opencode-ask normalized final-prompt)))
 
 ;;;###autoload
 (defun opencode-open-session (directory)
