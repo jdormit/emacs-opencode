@@ -46,7 +46,7 @@ Returns the created function symbol."
 (defun opencode-sse-register-handler (event handler)
   "Register HANDLER for SSE EVENT.
 
-EVENT is a string. HANDLER receives EVENT and DATA." 
+EVENT is a string. HANDLER receives EVENT and DATA."
   (opencode-sse--add-handler event handler))
 
 (defun opencode-sse-unregister-handlers (event)
@@ -63,7 +63,7 @@ EVENT is a string. HANDLER receives EVENT and DATA."
 (defun opencode-sse--decode-data (data)
   "Decode DATA from JSON.
 
-Signals an error when DATA is not valid JSON." 
+Signals an error when DATA is not valid JSON."
   (condition-case err
       (with-temp-buffer
         (insert data)
@@ -73,24 +73,24 @@ Signals an error when DATA is not valid JSON."
            (error-message-string err))))
 
 (defun opencode-sse--ensure-curl ()
-  "Ensure the configured curl executable exists." 
+  "Ensure the configured curl executable exists."
   (unless (executable-find opencode-sse-curl-command)
     (error "OpenCode SSE requires curl; ensure `%s` is on PATH" opencode-sse-curl-command)))
 
 (defun opencode-sse--build-url (connection)
-  "Build the SSE endpoint URL for CONNECTION." 
+  "Build the SSE endpoint URL for CONNECTION."
   (format "%s/event"
           (string-remove-suffix "/" (opencode-connection-base-url connection))))
 
 (defun opencode-sse--auth-header (connection)
-  "Return an Authorization header for CONNECTION when needed." 
+  "Return an Authorization header for CONNECTION when needed."
   (when-let ((password (opencode-connection-password connection)))
     (let ((user (or (opencode-connection-username connection) "opencode")))
       (format "Authorization: Basic %s"
               (base64-encode-string (format "%s:%s" user password) t)))))
 
 (defun opencode-sse--build-command (connection)
-  "Build curl command for CONNECTION." 
+  "Build curl command for CONNECTION."
   (let ((url (opencode-sse--build-url connection))
         (auth (opencode-sse--auth-header connection)))
     (append
@@ -99,62 +99,76 @@ Signals an error when DATA is not valid JSON."
      (list url))))
 
 (defun opencode-sse--initialize-state (connection)
-  "Initialize SSE parse state on CONNECTION." 
+  "Initialize SSE parse state on CONNECTION."
   (setf (opencode-connection-sse-state connection)
         (list :buffer "" :data nil)))
 
-(defun opencode-sse--clear-event (state)
-  "Reset event fields in STATE." 
-  (plist-put state :data nil)
-  state)
+(defun opencode-sse--ensure-state (connection)
+  "Return the SSE parser state for CONNECTION."
+  (or (opencode-connection-sse-state connection)
+      (opencode-sse--initialize-state connection)))
 
-(defun opencode-sse--append-data (state value)
-  "Append VALUE to STATE data field." 
-  (let ((current (plist-get state :data)))
-    (plist-put state :data (if current (concat current "\n" value) value))))
+(defun opencode-sse--read-state (connection key)
+  "Read KEY from CONNECTION SSE state."
+  (plist-get (opencode-sse--ensure-state connection) key))
 
-(defun opencode-sse--finalize-event (state)
-  "Finalize and dispatch event from STATE." 
-  (let ((data (plist-get state :data)))
+(defun opencode-sse--write-state (connection key value)
+  "Write VALUE for KEY in CONNECTION SSE state."
+  (let ((state (opencode-sse--ensure-state connection)))
+    (setf (opencode-connection-sse-state connection)
+          (plist-put state key value))
+    value))
+
+(defun opencode-sse--clear-event (connection)
+  "Reset event fields in CONNECTION SSE state."
+  (opencode-sse--write-state connection :data nil))
+
+(defun opencode-sse--append-data (connection value)
+  "Append VALUE to CONNECTION SSE data field."
+  (let ((current (opencode-sse--read-state connection :data)))
+    (opencode-sse--write-state connection :data
+                               (if current (concat current "\n" value) value))))
+
+(defun opencode-sse--finalize-event (connection)
+  "Finalize and dispatch event from CONNECTION SSE state."
+  (let ((data (opencode-sse--read-state connection :data)))
+    (opencode-sse--clear-event connection)
     (when data
       (let* ((payload (opencode-sse--decode-data data))
              (event (alist-get 'type payload nil nil #'string=)))
         (unless event
           (error "OpenCode SSE payload missing type field"))
-        (opencode-sse--dispatch event payload))))
-  (opencode-sse--clear-event state))
+        (opencode-sse--dispatch event payload)))))
 
-(defun opencode-sse--process-line (state line)
-  "Process LINE in SSE parser STATE." 
+(defun opencode-sse--process-line (connection line)
+  "Process LINE in SSE parser CONNECTION state."
   (cond
    ((string-empty-p line)
-    (opencode-sse--finalize-event state))
+    (opencode-sse--finalize-event connection))
    ((string-prefix-p ":" line)
-    state)
+    nil)
    (t
     (let* ((parts (split-string line ":" t " +"))
            (field (car parts))
            (value (string-join (cdr parts) ":")))
       (pcase field
-        ("data" (opencode-sse--append-data state value))
-        (_ state))))))
+        ("data" (opencode-sse--append-data connection value))
+        (_ nil))))))
 
 (defun opencode-sse--process-chunk (connection chunk)
-  "Process SSE CHUNK for CONNECTION." 
-  (let* ((state (or (opencode-connection-sse-state connection)
-                    (opencode-sse--initialize-state connection)))
-         (buffer (concat (plist-get state :buffer) chunk))
+  "Process SSE CHUNK for CONNECTION."
+  (let* ((buffer (concat (opencode-sse--read-state connection :buffer) chunk))
          (lines (split-string buffer "\n"))
          (incomplete (car (last lines)))
          (complete-lines (butlast lines)))
-    (plist-put state :buffer incomplete)
+    (opencode-sse--write-state connection :buffer incomplete)
     (dolist (line complete-lines)
-      (opencode-sse--process-line state (string-trim-right line "\r")))))
+      (opencode-sse--process-line connection (string-trim-right line "\r")))))
 
 (defun opencode-sse-open (connection)
   "Open an SSE stream for CONNECTION.
 
-Returns the streaming process." 
+Returns the streaming process."
   (opencode-sse--ensure-curl)
   (let* ((buffer (get-buffer-create (format " *opencode-sse<%s>*"
                                             (opencode-connection-directory connection))))
@@ -168,8 +182,10 @@ Returns the streaming process."
                              (when-let ((buffer (process-buffer proc)))
                                (when (buffer-live-p buffer)
                                  (with-current-buffer buffer
-                                   (goto-char (point-max))
-                                   (insert output))))
+                                   (save-excursion
+                                     (goto-char (process-mark proc))
+                                     (insert output)
+                                     (set-marker (process-mark proc) (point))))))
                              (opencode-sse--process-chunk connection output))
                    :sentinel (lambda (proc _event)
                                (when (memq (process-status proc) '(exit signal))
@@ -181,7 +197,7 @@ Returns the streaming process."
     process))
 
 (defun opencode-sse-close (connection)
-  "Stop the SSE stream for CONNECTION." 
+  "Stop the SSE stream for CONNECTION."
   (when-let ((process (opencode-connection-sse-process connection)))
     (when (process-live-p process)
       (delete-process process))
