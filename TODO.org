@@ -42,7 +42,8 @@ With colors!
 
 * TODO Emacs tool integration (MCP)
 - Expose Emacs access to OpenCode tools.
-
+  
+* TODO Handle sub-agents/sub-sessions 
 * DONE Current Goal: Vertical Slice (Launch → Chat → Stream)
 ** DONE Start opencode serve subprocess in CWD
 - Spawn opencode with --serve (or opencode serve) and capture host/port.
