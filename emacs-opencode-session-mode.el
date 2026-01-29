@@ -977,6 +977,89 @@ PREVIOUS-NAME is the previous buffer name to compare against."
          (session-id (alist-get 'sessionID properties)))
     (opencode-session--update-status session-id "idle")))
 
+(defun opencode-session--permission-patterns (permission)
+  "Return a list of pattern strings from PERMISSION."
+  (let ((patterns (alist-get 'patterns permission)))
+    (cond
+     ((vectorp patterns) (append patterns nil))
+     ((listp patterns) patterns)
+     (t nil))))
+
+(defun opencode-session--permission-detail (permission)
+  "Return a detail string for PERMISSION when available."
+  (let* ((kind (alist-get 'permission permission))
+         (metadata (alist-get 'metadata permission))
+         (patterns (opencode-session--permission-patterns permission))
+         (pattern (car patterns)))
+    (cond
+     ((and (string= kind "read") (alist-get 'filePath metadata))
+      (format "read %s" (alist-get 'filePath metadata)))
+     ((and (string= kind "edit") (alist-get 'filepath metadata))
+      (format "edit %s" (alist-get 'filepath metadata)))
+     ((and (string= kind "glob") (alist-get 'pattern metadata))
+      (format "glob %s" (alist-get 'pattern metadata)))
+     ((and (string= kind "grep") (alist-get 'pattern metadata))
+      (format "grep %s" (alist-get 'pattern metadata)))
+     ((and (string= kind "list") (alist-get 'path metadata))
+      (format "list %s" (alist-get 'path metadata)))
+     ((and (string= kind "bash") (alist-get 'command metadata))
+      (if-let ((description (alist-get 'description metadata)))
+          (format "%s (%s)" description (alist-get 'command metadata))
+        (format "%s" (alist-get 'command metadata))))
+     ((and (string= kind "task") (alist-get 'subagent_type metadata))
+      (format "task %s" (alist-get 'subagent_type metadata)))
+     ((and (string= kind "webfetch") (alist-get 'url metadata))
+      (format "web search %s" (alist-get 'url metadata)))
+     ((and (member kind '("websearch" "codesearch")) (alist-get 'query metadata))
+      (format "%s %s" (capitalize kind) (alist-get 'query metadata)))
+     ((and (string= kind "external_directory") pattern)
+      (format "access external directory %s" pattern))
+     (pattern
+      (format "%s" pattern))
+     (t nil))))
+
+(defun opencode-session--permission-prompt-label (permission)
+  "Return the minibuffer prompt label for PERMISSION." 
+  (let* ((kind (alist-get 'permission permission))
+         (detail (opencode-session--permission-detail permission))
+         (fallback (if kind (format "use %s" kind) "proceed")))
+    (format "OpenCode wants to %s: " (or detail fallback))))
+
+(defun opencode-session--prompt-permission (permission)
+  "Prompt for PERMISSION and send a response."
+  (let* ((request-id (alist-get 'id permission))
+         (session-id (alist-get 'sessionID permission))
+         (choices '("Allow once" "Allow always" "Deny"))
+         (prompt (opencode-session--permission-prompt-label permission))
+         (selection (condition-case nil
+                        (completing-read prompt choices nil t)
+                      (quit "Deny")))
+         (reply (cond
+                 ((string= selection "Allow always") "always")
+                 ((string= selection "Allow once") "once")
+                 (t "reject"))))
+    (unless opencode-session--connection
+      (error "OpenCode session is not connected"))
+    (unless request-id
+      (error "OpenCode permission request is missing ID"))
+    (opencode-client-permission-reply
+     opencode-session--connection
+     request-id
+     reply
+     :success (lambda (&rest _args)
+                (message "OpenCode permission reply sent"))
+     :error (lambda (&rest _args)
+              (message "OpenCode: failed to reply to permission request")))))
+
+(defun opencode-session--handle-permission-asked (_event data)
+  "Handle the permission.asked SSE DATA."
+  (let* ((permission (alist-get 'properties data))
+         (session-id (alist-get 'sessionID permission)))
+    (when-let ((buffer (opencode-session--buffer-for-session session-id)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (opencode-session--prompt-permission permission))))))
+
 (defun opencode-session--handle-message-updated (_event data)
   "Handle the message.updated SSE DATA."
   (let* ((info (alist-get 'info (alist-get 'properties data)))
@@ -1141,6 +1224,9 @@ Call ON-HISTORY-LOADED with BUFFER after the request completes."
 
 (opencode-sse-define-handler session-idle "session.idle" (_event data)
   (opencode-session--handle-session-idle _event data))
+
+(opencode-sse-define-handler permission-asked "permission.asked" (_event data)
+  (opencode-session--handle-permission-asked _event data))
 
 (opencode-sse-define-handler message-updated "message.updated" (_event data)
   (opencode-session--handle-message-updated _event data))

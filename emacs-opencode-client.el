@@ -101,6 +101,21 @@ included when provided."
    :success success
    :error error))
 
+(cl-defmethod opencode-client-permission-reply ((conn opencode-connection) request-id reply &key message success error)
+  "Reply to permission REQUEST-ID with REPLY.
+
+MESSAGE is sent when provided."
+  (let ((payload `((reply . ,reply))))
+    (when message
+      (setq payload (append payload `((message . ,message)))))
+    (opencode-request
+     conn
+     'POST
+     (format "/permission/%s/reply" request-id)
+     :json payload
+     :success success
+     :error error)))
+
 (provide 'emacs-opencode-client)
 
 ;;; emacs-opencode-client.el ends here
