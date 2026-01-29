@@ -298,14 +298,14 @@ Fallback to a plain busy label when frames are unavailable."
                           #'opencode-session--advance-spinner))))
 
 (defun opencode-session--maybe-stop-spinner ()
-  "Stop the session spinner timer when idle." 
+  "Stop the session spinner timer when idle."
   (unless (opencode-session--spinner-needed-p)
     (when (timerp opencode-session--spinner-timer)
       (cancel-timer opencode-session--spinner-timer))
     (setq opencode-session--spinner-timer nil)))
 
 (defun opencode-session--spinner-needed-p ()
-  "Return non-nil when any session buffer is busy." 
+  "Return non-nil when any session buffer is busy."
   (let (busy)
     (maphash
      (lambda (_session-id buffer)
@@ -431,7 +431,7 @@ Fallback to a plain busy label when frames are unavailable."
 (defun opencode-session--tool-summary (tool input metadata status state)
   "Return the formatted summary for TOOL using INPUT and METADATA.
 
-STATUS and STATE provide additional context for fallbacks." 
+STATUS and STATE provide additional context for fallbacks."
   (cond
    ((string= tool "todowrite")
     (opencode-session--tool-todos "# Todos" input metadata))
@@ -459,7 +459,7 @@ STATUS and STATE provide additional context for fallbacks."
 (defun opencode-session--tool-todos (title input metadata)
   "Render todo list TITLE using INPUT and METADATA.
 
-Returns a multi-line string." 
+Returns a multi-line string."
   (let* ((todos (opencode-session--tool-extract-todos input metadata))
          (lines (list title)))
     (dolist (todo todos)
@@ -470,7 +470,7 @@ Returns a multi-line string."
     (string-join (nreverse lines) "\n")))
 
 (defun opencode-session--tool-extract-todos (input metadata)
-  "Return todo list items from INPUT or METADATA." 
+  "Return todo list items from INPUT or METADATA."
   (let ((todos (or (alist-get 'todos metadata)
                    (alist-get 'todos input))))
     (cond
@@ -479,14 +479,14 @@ Returns a multi-line string."
      (t nil))))
 
 (defun opencode-session--todo-marker (status)
-  "Return a checkbox marker for STATUS." 
+  "Return a checkbox marker for STATUS."
   (cond
    ((string= status "completed") "✓")
    ((string= status "in_progress") "•")
    (t " ")))
 
 (defun opencode-session--tool-glob (input metadata)
-  "Render a summary line for the glob tool." 
+  "Render a summary line for the glob tool."
   (let* ((pattern (alist-get 'pattern input))
          (path (alist-get 'path input))
          (count (alist-get 'count metadata))
@@ -515,7 +515,7 @@ Returns a multi-line string."
      " ")))
 
 (defun opencode-session--tool-read (input)
-  "Render a summary line for the read tool." 
+  "Render a summary line for the read tool."
   (let* ((file-path (or (alist-get 'filePath input) ""))
          (offset (alist-get 'offset input))
          (limit (alist-get 'limit input))
@@ -526,7 +526,7 @@ Returns a multi-line string."
     (format "→ Read %s%s" path (if args (concat " " args) ""))))
 
 (defun opencode-session--tool-bash (input metadata)
-  "Render a summary line for the bash tool." 
+  "Render a summary line for the bash tool."
   (let* ((description (or (alist-get 'description input)
                           (alist-get 'description metadata)))
          (command (alist-get 'command input)))
@@ -538,7 +538,7 @@ Returns a multi-line string."
 (defun opencode-session--tool-edit-write (label input metadata)
   "Render a summary line for edit or write LABEL.
 
-INPUT and METADATA may include the file path." 
+INPUT and METADATA may include the file path."
   (let* ((file-path (or (alist-get 'filePath input)
                         (alist-get 'filepath metadata)
                         ""))
@@ -546,7 +546,7 @@ INPUT and METADATA may include the file path."
     (format "→ %s %s" label path)))
 
 (defun opencode-session--tool-task (input metadata)
-  "Render a summary line for the task tool." 
+  "Render a summary line for the task tool."
   (let* ((subagent (or (alist-get 'subagent_type input)
                        (alist-get 'subagent-type input)
                        "task"))
@@ -558,7 +558,7 @@ INPUT and METADATA may include the file path."
       (format "✱ %s" agent-label))))
 
 (defun opencode-session--tool-webfetch (input)
-  "Render a summary line for the webfetch tool." 
+  "Render a summary line for the webfetch tool."
   (let* ((url (alist-get 'url input))
          (format-type (alist-get 'format input))
          (args (opencode-session--format-args
@@ -570,7 +570,7 @@ INPUT and METADATA may include the file path."
 (defun opencode-session--tool-generic (tool input status state)
   "Render a fallback summary line for TOOL.
 
-INPUT, STATUS, and STATE provide context for the description." 
+INPUT, STATUS, and STATE provide context for the description."
   (let* ((description (or (alist-get 'description input)
                           (alist-get 'title state)
                           tool
@@ -579,7 +579,7 @@ INPUT, STATUS, and STATE provide context for the description."
     (string-join (delq nil (list (format "✱ %s" description) suffix)) " ")))
 
 (defun opencode-session--display-path (path)
-  "Return PATH formatted for display." 
+  "Return PATH formatted for display."
   (when (and path (stringp path))
     (let ((directory (and opencode-session--connection
                           (opencode-connection-directory opencode-session--connection))))
@@ -588,24 +588,24 @@ INPUT, STATUS, and STATE provide context for the description."
         path))))
 
 (defun opencode-session--format-location (path)
-  "Format PATH as a location suffix." 
+  "Format PATH as a location suffix."
   (when (and path (stringp path))
     (format "in %s" (opencode-session--display-path path))))
 
 (defun opencode-session--format-count (count truncated)
-  "Format COUNT and TRUNCATED into a match suffix." 
+  "Format COUNT and TRUNCATED into a match suffix."
   (when (numberp count)
     (format "(%s matches)" (if truncated (format "%s+" count) count))))
 
 (defun opencode-session--format-args (args)
-  "Format ARGS list into a bracket suffix." 
+  "Format ARGS list into a bracket suffix."
   (when (and args (listp args))
     (let ((clean (delq nil args)))
       (when clean
         (format "[%s]" (string-join clean ", "))))))
 
 (defun opencode-session--format-quoted (value)
-  "Quote VALUE for display when present." 
+  "Quote VALUE for display when present."
   (when (and value (stringp value))
     (format "\"%s\"" value)))
 
@@ -859,7 +859,7 @@ PREVIOUS-NAME is the previous buffer name to compare against."
     (delq nil names)))
 
 (defun opencode-session--maybe-fetch-agents (connection)
-  "Fetch and cache agents for CONNECTION when needed." 
+  "Fetch and cache agents for CONNECTION when needed."
   (unless (opencode-connection-agents connection)
     (let ((session-buffer (current-buffer)))
       (opencode-client-agents
@@ -885,30 +885,30 @@ PREVIOUS-NAME is the previous buffer name to compare against."
         (opencode-session--render-header)))))
 
 (defun opencode-session--ensure-agents (connection)
-  "Ensure agent list is available for CONNECTION." 
+  "Ensure agent list is available for CONNECTION."
   (if (opencode-connection-agents connection)
       (opencode-session--apply-default-agent connection)
     (opencode-session--maybe-fetch-agents connection)))
 
 (defun opencode-session--refresh-agents (connection)
-  "Refresh the cached agent list for CONNECTION." 
+  "Refresh the cached agent list for CONNECTION."
   (setf (opencode-connection-agents connection) nil)
   (opencode-session--maybe-fetch-agents connection))
 
 (defun opencode-session--available-agents ()
-  "Return available agents for the current session buffer." 
+  "Return available agents for the current session buffer."
   (when opencode-session--connection
     (opencode-connection-agents opencode-session--connection)))
 
 (defun opencode-session--set-agent (agent index)
-  "Set the current session agent to AGENT at INDEX." 
+  "Set the current session agent to AGENT at INDEX."
   (setq-local opencode-session--agent agent)
   (setq-local opencode-session--agent-index index)
   (opencode-session--render-header)
   (message "OpenCode agent: %s" agent))
 
 (defun opencode-session-select-agent (agent)
-  "Select AGENT for the current session buffer." 
+  "Select AGENT for the current session buffer."
   (interactive
    (progn
      (unless opencode-session--connection
@@ -926,7 +926,7 @@ PREVIOUS-NAME is the previous buffer name to compare against."
       (message "OpenCode: unknown agent %s" agent))))
 
 (defun opencode-session--cycle-agent (step)
-  "Cycle the current agent by STEP positions." 
+  "Cycle the current agent by STEP positions."
   (unless opencode-session--connection
     (error "OpenCode session is not connected"))
   (opencode-session--ensure-agents opencode-session--connection)
@@ -939,24 +939,24 @@ PREVIOUS-NAME is the previous buffer name to compare against."
       (opencode-session--set-agent (nth next agents) next))))
 
 (defun opencode-session-next-agent ()
-  "Select the next available agent." 
+  "Select the next available agent."
   (interactive)
   (opencode-session--cycle-agent 1))
 
 (defun opencode-session-previous-agent ()
-  "Select the previous available agent." 
+  "Select the previous available agent."
   (interactive)
   (opencode-session--cycle-agent -1))
 
 (defun opencode-session-refresh-agents ()
-  "Refresh the available agents list for the session." 
+  "Refresh the available agents list for the session."
   (interactive)
   (unless opencode-session--connection
     (error "OpenCode session is not connected"))
   (opencode-session--refresh-agents opencode-session--connection))
 
 (defun opencode-session-interrupt ()
-  "Interrupt the active prompt for the current session." 
+  "Interrupt the active prompt for the current session."
   (interactive)
   (unless (and opencode-session--connection opencode-session--session)
     (error "OpenCode session is not connected"))
@@ -1019,7 +1019,7 @@ PREVIOUS-NAME is the previous buffer name to compare against."
      (t nil))))
 
 (defun opencode-session--permission-prompt-label (permission)
-  "Return the minibuffer prompt label for PERMISSION." 
+  "Return the minibuffer prompt label for PERMISSION."
   (let* ((kind (alist-get 'permission permission))
          (detail (opencode-session--permission-detail permission))
          (fallback (if kind (format "use %s" kind) "proceed")))
@@ -1051,6 +1051,106 @@ PREVIOUS-NAME is the previous buffer name to compare against."
      :error (lambda (&rest _args)
               (message "OpenCode: failed to reply to permission request")))))
 
+(defun opencode-session--question-list (questions)
+  "Normalize QUESTIONS into a list."
+  (cond
+   ((vectorp questions) (append questions nil))
+   ((listp questions) questions)
+   (t nil)))
+
+(defun opencode-session--question-options (question)
+  "Return option labels for QUESTION."
+  (let ((options (alist-get 'options question)))
+    (mapcar (lambda (option) (alist-get 'label option))
+            (opencode-session--normalize-items options))))
+
+(defun opencode-session--question-multiple-p (question)
+  "Return non-nil if QUESTION allows multiple answers."
+  (eq (alist-get 'multiple question) t))
+
+(defun opencode-session--question-custom-p (question)
+  "Return non-nil if QUESTION allows custom answers."
+  (let ((custom (alist-get 'custom question)))
+    (not (or (eq custom :json-false)
+             (eq custom json-false)
+             (eq custom nil)))))
+
+(defun opencode-session--question-prompt-label (question)
+  "Return the minibuffer prompt label for QUESTION."
+  (let ((header (alist-get 'header question))
+        (text (alist-get 'question question)))
+    (if (and header (not (string-empty-p header)))
+        (format "OpenCode %s: %s " header text)
+      (format "OpenCode: %s " text))))
+
+(defun opencode-session--question-read-custom (prompt)
+  "Read a custom answer using PROMPT."
+  (read-string (concat prompt "(Other): ")))
+
+(defun opencode-session--question-read-single (question)
+  "Prompt for a single answer to QUESTION.
+
+Returns a list containing one answer string."
+  (let* ((prompt (opencode-session--question-prompt-label question))
+         (options (opencode-session--question-options question))
+         (custom (opencode-session--question-custom-p question))
+         (choices (if custom (append options '("Other")) options))
+         (selection (completing-read prompt choices nil t)))
+    (if (and custom (string= selection "Other"))
+        (list (opencode-session--question-read-custom prompt))
+      (list selection))))
+
+(defun opencode-session--question-read-multiple (question)
+  "Prompt for multiple answers to QUESTION.
+
+Returns a list of answer strings."
+  (let* ((prompt (opencode-session--question-prompt-label question))
+         (options (opencode-session--question-options question))
+         (custom (opencode-session--question-custom-p question))
+         (choices (if custom (append options '("Other")) options))
+         (selection (completing-read-multiple prompt choices nil t)))
+    (if (and custom (member "Other" selection))
+        (let ((custom-answer (opencode-session--question-read-custom prompt)))
+          (append (remove "Other" selection) (list custom-answer)))
+      selection)))
+
+(defun opencode-session--question-answers (questions)
+  "Return answers for QUESTIONS via minibuffer prompts."
+  (mapcar (lambda (question)
+            (if (opencode-session--question-multiple-p question)
+                (opencode-session--question-read-multiple question)
+              (opencode-session--question-read-single question)))
+          questions))
+
+(defun opencode-session--prompt-question (payload)
+  "Prompt for question PAYLOAD and send a response."
+  (let* ((request-id (alist-get 'id payload))
+         (session-id (alist-get 'sessionID payload))
+         (questions (opencode-session--question-list (alist-get 'questions payload)))
+         (answers (condition-case nil
+                      (opencode-session--question-answers questions)
+                    (quit :reject))))
+    (unless opencode-session--connection
+      (error "OpenCode session is not connected"))
+    (unless request-id
+      (error "OpenCode question request is missing ID"))
+    (if (eq answers :reject)
+        (opencode-client-question-reject
+         opencode-session--connection
+         request-id
+         :success (lambda (&rest _args)
+                    (message "OpenCode question rejected"))
+         :error (lambda (&rest _args)
+                  (message "OpenCode: failed to reject question")))
+      (opencode-client-question-reply
+       opencode-session--connection
+       request-id
+       answers
+       :success (lambda (&rest _args)
+                  (message "OpenCode question reply sent"))
+       :error (lambda (&rest _args)
+                (message "OpenCode: failed to reply to question"))))))
+
 (defun opencode-session--handle-permission-asked (_event data)
   "Handle the permission.asked SSE DATA."
   (let* ((permission (alist-get 'properties data))
@@ -1059,6 +1159,18 @@ PREVIOUS-NAME is the previous buffer name to compare against."
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
           (opencode-session--prompt-permission permission))))))
+
+(defun opencode-session--handle-question-asked (_event data)
+  "Handle the question.asked SSE DATA."
+  (let* ((question (alist-get 'properties data))
+         (session-id (alist-get 'sessionID question))
+         (request-id (alist-get 'id question)))
+    (message "OpenCode: question.asked for %s (session %s)" request-id session-id)
+    (when-let ((buffer (opencode-session--buffer-for-session session-id)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (message "OpenCode: prompting question %s in %s" request-id (buffer-name))
+          (opencode-session--prompt-question question))))))
 
 (defun opencode-session--handle-message-updated (_event data)
   "Handle the message.updated SSE DATA."
@@ -1182,7 +1294,7 @@ Call ON-HISTORY-LOADED with BUFFER after the request completes."
               (funcall on-history-loaded buffer)))))
 
 (defun opencode-session--hydrate-message (item)
-  "Add a message ITEM returned from the API." 
+  "Add a message ITEM returned from the API."
   (let* ((info (alist-get 'info item))
          (parts (alist-get 'parts item))
          (message (opencode-session--message-from-info info)))
@@ -1195,7 +1307,7 @@ Call ON-HISTORY-LOADED with BUFFER after the request completes."
             (append opencode-session--messages (list message))))))
 
 (defun opencode-session--hydrate-parts (parts)
-  "Hydrate PARTS into an alist of message parts." 
+  "Hydrate PARTS into an alist of message parts."
   (let (result)
     (dolist (part (opencode-session--normalize-items parts))
       (let* ((part-id (alist-get 'id part))
@@ -1207,7 +1319,7 @@ Call ON-HISTORY-LOADED with BUFFER after the request completes."
     (nreverse result)))
 
 (defun opencode-session--normalize-items (items)
-  "Normalize ITEMS to a list when vector or list." 
+  "Normalize ITEMS to a list when vector or list."
   (cond
    ((vectorp items) (append items nil))
    ((listp items) items)
@@ -1227,6 +1339,9 @@ Call ON-HISTORY-LOADED with BUFFER after the request completes."
 
 (opencode-sse-define-handler permission-asked "permission.asked" (_event data)
   (opencode-session--handle-permission-asked _event data))
+
+(opencode-sse-define-handler question-asked "question.asked" (_event data)
+  (opencode-session--handle-question-asked _event data))
 
 (opencode-sse-define-handler message-updated "message.updated" (_event data)
   (opencode-session--handle-message-updated _event data))

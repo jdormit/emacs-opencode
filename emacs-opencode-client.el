@@ -80,7 +80,7 @@ LIMIT restricts the number of returned messages when provided."
   "Send PARTS to SESSION-ID asynchronously.
 
 PARTS is a list of message part objects for the request body. AGENT is
-included when provided." 
+included when provided."
   (opencode-request
    conn
    'POST
@@ -92,7 +92,7 @@ included when provided."
    :error error))
 
 (cl-defmethod opencode-client-session-abort ((conn opencode-connection) session-id &key success error)
-  "Abort the active prompt for SESSION-ID." 
+  "Abort the active prompt for SESSION-ID."
   (opencode-request
    conn
    'POST
@@ -115,6 +115,43 @@ MESSAGE is sent when provided."
      :json payload
      :success success
      :error error)))
+
+(defun opencode--vectorize-answers (answers)
+  "Return ANSWERS as a vector of answer vectors."
+  (let ((items (cond
+                ((vectorp answers) (append answers nil))
+                ((listp answers) answers)
+                (t nil))))
+    (apply #'vector
+           (mapcar (lambda (answer)
+                     (cond
+                      ((vectorp answer) answer)
+                      ((listp answer) (vconcat answer))
+                      ((stringp answer) (vector answer))
+                      (t (vector))))
+                   items))))
+
+(cl-defmethod opencode-client-question-reply ((conn opencode-connection) request-id answers &key success error)
+  "Reply to question REQUEST-ID with ANSWERS.
+
+ANSWERS is a list of string lists aligned to the requested questions."
+  (opencode-request
+   conn
+   'POST
+   (format "/question/%s/reply" request-id)
+   :json `((answers . ,(opencode--vectorize-answers answers)))
+   :success success
+   :error error))
+
+(cl-defmethod opencode-client-question-reject ((conn opencode-connection) request-id &key success error)
+  "Reject the question REQUEST-ID."
+  (opencode-request
+   conn
+   'POST
+   (format "/question/%s/reject" request-id)
+   :parser (lambda () nil)
+   :success success
+   :error error))
 
 (provide 'emacs-opencode-client)
 
