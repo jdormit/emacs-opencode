@@ -12,6 +12,17 @@
   "Emacs client for the OpenCode server."
   :group 'applications)
 
+(defcustom opencode-session-spinner-frames
+  '("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+  "Spinner frames used in the session header for busy states."
+  :type '(repeat string)
+  :group 'emacs-opencode)
+
+(defcustom opencode-session-spinner-interval 0.1
+  "Seconds between session header spinner frames."
+  :type 'number
+  :group 'emacs-opencode)
+
 (defface opencode-session-user-face
   '((t :inherit default))
   "Face used for user messages."
@@ -32,6 +43,11 @@
   "Face used for session status text."
   :group 'emacs-opencode)
 
+(defface opencode-session-spinner-face
+  '((t :inherit font-lock-type-face))
+  "Face used for session spinner text."
+  :group 'emacs-opencode)
+
 (defface opencode-session-agent-face
   '((t :inherit (mode-line-emphasis success) :weight bold))
   "Face used for the active agent label."
@@ -44,6 +60,9 @@
 
 (defvar opencode-session--buffers (make-hash-table :test 'equal)
   "Registry mapping session IDs to buffers.")
+
+(defvar opencode-session--spinner-timer nil
+  "Timer used to animate session header spinners.")
 
 (defvar opencode-session-send-input-hook nil
   "Hook run when input is submitted.
@@ -70,6 +89,9 @@ Each function receives SESSION and INPUT as arguments.")
 
 (defvar-local opencode-session--agent-index nil
   "Index of the selected agent in the available agents list.")
+
+(defvar-local opencode-session--spinner-index 0
+  "Current spinner frame index for the session buffer.")
 
 (defvar opencode-session-mode-map
   (let ((map (make-sparse-keymap)))
@@ -192,7 +214,8 @@ request completes."
 (defun opencode-session--register-buffer (session buffer)
   "Register BUFFER for SESSION."
   (when-let ((session-id (opencode-session-id session)))
-    (puthash session-id buffer opencode-session--buffers)))
+    (puthash session-id buffer opencode-session--buffers)
+    (opencode-session--maybe-start-spinner)))
 
 (defun opencode-session--buffer-for-session (session-id)
   "Return the session buffer for SESSION-ID, if any."
@@ -215,15 +238,85 @@ request completes."
                      "idle"))
          (agent opencode-session--agent)
          (agent-label (when (and agent (not (string-empty-p agent)))
-                        (format "[%s]" agent))))
+                        (format "[%s]" agent)))
+         (status-label (opencode-session--header-status-label status)))
     (setq header-line-format
           (concat (propertize title 'face 'opencode-session-header-face)
                   (when agent-label
                     (concat " "
                             (propertize agent-label 'face 'opencode-session-agent-face)))
-                  " "
-                  (propertize (format "[%s]" status)
-                              'face 'opencode-session-status-face)))))
+                  (when (not (string-empty-p status-label))
+                    (concat " "
+                            (propertize status-label
+                                        'face 'opencode-session-spinner-face)))))))
+
+(defun opencode-session--header-status-label (status)
+  "Return STATUS label for the header line."
+  (if (opencode-session--status-busy-p status)
+      (opencode-session--spinner-frame)
+    ""))
+
+(defun opencode-session--status-busy-p (status)
+  "Return non-nil when STATUS should show a spinner."
+  (not (string= status "idle")))
+
+(defun opencode-session--spinner-frame ()
+  "Return the current spinner frame.
+
+Fallback to a plain busy label when frames are unavailable."
+  (let* ((frames (if (and opencode-session-spinner-frames
+                          (listp opencode-session-spinner-frames))
+                     opencode-session-spinner-frames
+                   '("…")))
+         (count (length frames)))
+    (if (> count 0)
+        (nth (mod opencode-session--spinner-index count) frames)
+      "busy")))
+
+(defun opencode-session--advance-spinner ()
+  "Advance spinner frames for visible session buffers."
+  (maphash
+   (lambda (_session-id buffer)
+     (when (buffer-live-p buffer)
+       (with-current-buffer buffer
+         (when (and opencode-session--session
+                    (opencode-session--status-busy-p
+                     (or (opencode-session-status opencode-session--session)
+                         "idle")))
+           (setq opencode-session--spinner-index
+                 (1+ opencode-session--spinner-index))
+           (opencode-session--render-header)))))
+   opencode-session--buffers))
+
+(defun opencode-session--maybe-start-spinner ()
+  "Start the session spinner timer when needed."
+  (when (and (null opencode-session--spinner-timer)
+             (opencode-session--spinner-needed-p))
+    (setq opencode-session--spinner-timer
+          (run-with-timer 0 opencode-session-spinner-interval
+                          #'opencode-session--advance-spinner))))
+
+(defun opencode-session--maybe-stop-spinner ()
+  "Stop the session spinner timer when idle." 
+  (unless (opencode-session--spinner-needed-p)
+    (when (timerp opencode-session--spinner-timer)
+      (cancel-timer opencode-session--spinner-timer))
+    (setq opencode-session--spinner-timer nil)))
+
+(defun opencode-session--spinner-needed-p ()
+  "Return non-nil when any session buffer is busy." 
+  (let (busy)
+    (maphash
+     (lambda (_session-id buffer)
+       (when (and (not busy) (buffer-live-p buffer))
+         (with-current-buffer buffer
+           (when (and opencode-session--session
+                      (opencode-session--status-busy-p
+                       (or (opencode-session-status opencode-session--session)
+                           "idle")))
+             (setq busy t)))))
+     opencode-session--buffers)
+    busy))
 
 (defun opencode-session--render-messages ()
   "Render all messages for the session."
@@ -714,7 +807,9 @@ PREVIOUS-NAME is the previous buffer name to compare against."
       (with-current-buffer buffer
         (when opencode-session--session
           (setf (opencode-session-status opencode-session--session) status)
-          (opencode-session--render-header))))))
+          (opencode-session--render-header)
+          (opencode-session--maybe-start-spinner)
+          (opencode-session--maybe-stop-spinner))))))
 
 (defun opencode-session--handle-session-created (_event data)
   "Handle the session.created SSE DATA."
