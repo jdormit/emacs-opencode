@@ -1070,7 +1070,7 @@ PREVIOUS-NAME is the previous buffer name to compare against."
 
 (defun opencode-session--question-custom-p (question)
   "Return non-nil if QUESTION allows custom answers."
-  (let ((custom (alist-get 'custom question)))
+  (let ((custom (alist-get 'custom question :missing)))
     (not (or (eq custom :json-false)
              (eq custom json-false)
              (eq custom nil)))))
