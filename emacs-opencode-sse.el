@@ -19,6 +19,11 @@
   :type 'string
   :group 'emacs-opencode)
 
+(defcustom opencode-sse-log-output nil
+  "When non-nil, log raw SSE output to the process buffer."
+  :type 'boolean
+  :group 'emacs-opencode)
+
 (defvar opencode-sse--handlers nil
   "Alist mapping SSE event names to handler lists.")
 
@@ -179,13 +184,17 @@ Returns the streaming process."
                    :command command
                    :noquery t
                    :filter (lambda (proc output)
-                             (when-let ((buffer (process-buffer proc)))
-                               (when (buffer-live-p buffer)
-                                 (with-current-buffer buffer
-                                   (save-excursion
-                                     (goto-char (process-mark proc))
-                                     (insert output)
-                                     (set-marker (process-mark proc) (point))))))
+                             (when opencode-sse-log-output
+                               (when-let ((buffer (process-buffer proc)))
+                                 (when (buffer-live-p buffer)
+                                   (with-current-buffer buffer
+                                     (let ((inhibit-read-only t)
+                                           (inhibit-modification-hooks t)
+                                           (inhibit-redisplay t))
+                                       (save-excursion
+                                         (goto-char (process-mark proc))
+                                         (insert output)
+                                         (set-marker (process-mark proc) (point))))))))
                              (opencode-sse--process-chunk connection output))
                    :sentinel (lambda (proc _event)
                                (when (memq (process-status proc) '(exit signal))
@@ -193,6 +202,11 @@ Returns the streaming process."
                                    (with-current-buffer buffer
                                      (goto-char (point-max))
                                      (insert "\n[opencode] SSE stream closed"))))))))
+    (with-current-buffer buffer
+      (setq-local buffer-read-only t)
+      (setq-local buffer-undo-list t)
+      (setq-local auto-save-default nil)
+      (setq-local truncate-lines t))
     (setf (opencode-connection-sse-process connection) process)
     process))
 
