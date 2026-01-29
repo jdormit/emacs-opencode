@@ -14,7 +14,7 @@ Example SSE:
 data: {"type":"question.asked","properties":{"id":"que_c055308d8001R7q6izrlXP4nzo","sessionID":"ses_3faad41e4ffe8JF0e2lLG0y24o","questions":[{"question":"For tool parts rendering, do you want them inline with message text or as a distinct block (e.g., `[tool]` header + status/output)?","header":"Tool UI","options":[{"label":"Distinct block (Recommended)","description":"Render tool parts as separate block below message content."},{"label":"Inline text","description":"Mix tool info into the message text flow."},{"label":"Other","description":"Specify custom formatting or placement."}]},{"question":"Should tool output be fully rendered or summarized (e.g., first line + truncated)?","header":"Output","options":[{"label":"Summarized (Recommended)","description":"Show brief output with truncation indicator."},{"label":"Full output","description":"Render full tool output in buffer."},{"label":"Other","description":"Specify custom truncation rules."}]}],"tool":{"messageID":"msg_c0552ed20002Z70IEWVcsE36dF","callID":"call_twQ1UXrHcS2qpL0epHDBKXsw"}}}
 #+end_src
 * TODO Address poor performance of SSE buffer/event dispatch
-* TODO Buffer-aware commands
+* IN PROGRESS Buffer-aware commands
 - Ask about region/point/file context.
 - Apply edits to selection or buffer.
 
@@ -26,8 +26,9 @@ This will require building out some additional functionality:
 - a function to open a new opencode session with a prompt that intelligently finds/starts the opencode connection
 - (optional) a minor mode with keybindings for the in-buffer contextual commands
 
-* TODO Make the session buffer look pretty
+* IN PROGRESS Make the session buffer look pretty
 With colors!
+
 * TODO Handle session.diff messages
 - Show each session.diff payload inside the message list.
 - Provide a dedicated diff UI rendering (mirrors TUI behavior).
@@ -44,6 +45,9 @@ With colors!
 - Expose Emacs access to OpenCode tools.
   
 * TODO Handle sub-agents/sub-sessions 
+* TODO Support showing reasoning blocks
+* DONE Add command to send interrupt to opencode
+CLOSED: [2026-01-29 Thu 00:15]
 * DONE Current Goal: Vertical Slice (Launch → Chat → Stream)
 ** DONE Start opencode serve subprocess in CWD
 - Spawn opencode with --serve (or opencode serve) and capture host/port.
