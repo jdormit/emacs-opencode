@@ -32,6 +32,32 @@
   :type 'string
   :group 'emacs-opencode)
 
+(defun opencode-connection--port-available-p (hostname port)
+  "Return non-nil when PORT can be bound on HOSTNAME."
+  (when (and port (> port 0))
+    (condition-case nil
+        (let ((process (make-network-process
+                        :name "opencode-port-check"
+                        :server t
+                        :host hostname
+                        :service port
+                        :noquery t)))
+          (delete-process process)
+          t)
+      (file-error nil))))
+
+(defun opencode-connection--pick-random-port (hostname)
+  "Return a free TCP port bound on HOSTNAME."
+  (let ((process (make-network-process
+                  :name "opencode-port-random"
+                  :server t
+                  :host hostname
+                  :service 0
+                  :noquery t)))
+    (unwind-protect
+        (process-contact process :service)
+      (delete-process process))))
+
 (defun opencode-connection--base-url (hostname port)
   "Build base URL for HOSTNAME and PORT."
   (format "http://%s:%d" hostname port))
@@ -40,8 +66,14 @@
   "Create a connection object for DIRECTORY.
 
 HOSTNAME and PORT override the default server config."
-  (let ((resolved-host (or hostname opencode-server-host))
-        (resolved-port (or port opencode-server-port)))
+  (let* ((resolved-host (or hostname opencode-server-host))
+         (resolved-port (or port
+                            (if (opencode-connection--port-available-p
+                                 resolved-host
+                                 opencode-server-port)
+                                opencode-server-port
+                              (opencode-connection--pick-random-port
+                               resolved-host)))))
     (opencode-connection-create
      :base-url (opencode-connection--base-url resolved-host resolved-port)
      :hostname resolved-host
