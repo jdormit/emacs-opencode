@@ -33,6 +33,11 @@
   "Face used for user messages."
   :group 'emacs-opencode)
 
+(defface opencode-session-user-prefix-face
+  '((t :inherit font-lock-constant-face))
+  "Face used for the user message line indicator."
+  :group 'emacs-opencode)
+
 (defface opencode-session-assistant-face
   '((t :inherit default))
   "Face used for assistant messages."
@@ -339,11 +344,11 @@ Fallback to a plain busy label when frames are unavailable."
   (let ((start (opencode-message-start-marker message))
         (end (opencode-message-end-marker message)))
     (if (and start end)
-        (opencode-session--replace-message-region start end text face)
+        (opencode-session--replace-message-region start end text face message)
       (opencode-session--insert-message message text face))))
 
-(defun opencode-session--replace-message-region (start end text face)
-  "Replace text between START and END with TEXT and FACE."
+(defun opencode-session--replace-message-region (start end text face message)
+  "Replace text between START and END with TEXT, FACE, and MESSAGE."
   (let ((inhibit-read-only t))
     (save-excursion
       (goto-char (marker-position start))
@@ -353,7 +358,7 @@ Fallback to a plain busy label when frames are unavailable."
         (let ((new-end (point)))
           (set-marker start new-start)
           (set-marker end new-end)
-          (opencode-session--apply-message-properties new-start new-end face))))))
+          (opencode-session--apply-message-properties new-start new-end face message))))))
 
 (defun opencode-session--insert-message (message text face)
   "Insert MESSAGE with TEXT and FACE at the end of the log."
@@ -368,12 +373,26 @@ Fallback to a plain busy label when frames are unavailable."
         (insert "\n")
         (set-marker opencode-session--input-start-marker (point))
         (set-marker opencode-session--input-marker (point))
-        (opencode-session--apply-message-properties start (point) face)))))
+        (opencode-session--apply-message-properties start (point) face message)))))
 
-(defun opencode-session--apply-message-properties (start end face)
-  "Apply message properties from START to END with FACE."
+(defun opencode-session--apply-message-properties (start end face message)
+  "Apply message properties from START to END with FACE for MESSAGE."
   (let ((properties '(read-only t front-sticky t rear-nonsticky t)))
-    (add-text-properties start end (if face (append properties `(face ,face)) properties))))
+    (add-text-properties start end (if face (append properties `(face ,face)) properties))
+    (opencode-session--apply-user-prefix message start end)))
+
+(defun opencode-session--apply-user-prefix (message start end)
+  "Apply a line indicator for user MESSAGE between START and END."
+  (when (and message (string= (opencode-message-role message) "user"))
+    (let* ((marker (propertize "|" 'face 'opencode-session-user-prefix-face))
+           (prefix (concat marker " "))
+           (prefix-end (if (and (> end start)
+                                (eq (char-before end) ?\n))
+                           (1- end)
+                         end)))
+      (when (> prefix-end start)
+        (add-text-properties start prefix-end
+                             `(line-prefix ,prefix wrap-prefix ,prefix))))))
 
 (defun opencode-session--message-text (message)
   "Return the renderable text for MESSAGE."
