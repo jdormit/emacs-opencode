@@ -28,6 +28,11 @@
   :type 'string
   :group 'emacs-opencode)
 
+(defcustom opencode-session-input-prompt "❯ "
+  "Prompt string shown before the session input area."
+  :type 'string
+  :group 'emacs-opencode)
+
 (defface opencode-session-user-face
   '((t :inherit default))
   "Face used for user messages."
@@ -36,6 +41,11 @@
 (defface opencode-session-user-prefix-face
   '((t :inherit font-lock-constant-face))
   "Face used for the user message line indicator."
+  :group 'emacs-opencode)
+
+(defface opencode-session-input-prompt-face
+  '((t :inherit shadow))
+  "Face used for the session input prompt."
   :group 'emacs-opencode)
 
 (defface opencode-session-assistant-face
@@ -93,6 +103,9 @@ Each function receives SESSION and INPUT as arguments.")
 
 (defvar-local opencode-session--input-marker nil
   "Marker indicating the end of the input region.")
+
+(defvar-local opencode-session--input-prompt-overlay nil
+  "Overlay used to display the input prompt.")
 
 (defvar-local opencode-session--agent nil
   "Selected agent name for the current session buffer.")
@@ -373,6 +386,7 @@ Fallback to a plain busy label when frames are unavailable."
         (insert "\n")
         (set-marker opencode-session--input-start-marker (point))
         (set-marker opencode-session--input-marker (point))
+        (opencode-session--ensure-input-prompt)
         (opencode-session--apply-message-properties start (point) face message)))))
 
 (defun opencode-session--apply-message-properties (start end face message)
@@ -686,7 +700,24 @@ INPUT, STATUS, and STATE provide context for the description."
   (let ((inhibit-read-only t))
     (goto-char (point-max))
     (set-marker opencode-session--input-marker (point)))
+  (opencode-session--ensure-input-prompt)
   (opencode-session--goto-input))
+
+(defun opencode-session--ensure-input-prompt ()
+  "Ensure the input prompt overlay is up to date."
+  (when opencode-session--input-start-marker
+    (let ((prompt opencode-session-input-prompt))
+      (if (or (null prompt) (string-empty-p prompt))
+          (when (overlayp opencode-session--input-prompt-overlay)
+            (delete-overlay opencode-session--input-prompt-overlay)
+            (setq opencode-session--input-prompt-overlay nil))
+        (let ((pos (marker-position opencode-session--input-start-marker)))
+          (unless (overlayp opencode-session--input-prompt-overlay)
+            (setq opencode-session--input-prompt-overlay (make-overlay pos pos)))
+          (move-overlay opencode-session--input-prompt-overlay pos pos)
+          (overlay-put opencode-session--input-prompt-overlay
+                       'before-string
+                       (propertize prompt 'face 'opencode-session-input-prompt-face)))))))
 
 (defun opencode-session--goto-input ()
   "Move point to the input region."
