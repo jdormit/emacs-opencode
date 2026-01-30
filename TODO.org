@@ -1,8 +1,6 @@
 #+TITLE: Emacs OpenCode TODO
 
-* TODO Handle diff in edit tool calls
-- Show the diff after each edit like the TUI
-
+* TODO Show shell command being run in shell tool call
 * TODO Support slash commands in the session buffer
 * TODO Overview buffers (sessions/projects)
 - List-returning functions for sessions/projects.
@@ -19,10 +17,14 @@
 - Avoid full re-render per part; add incremental text updates where possible.
 - Throttle header/spinner updates during streaming bursts.
 - Queue SSE handlers to drain in-order with fewer timers.
-* DONE Sometimes multiple "Read" tool calls end up on the same line
-CLOSED: [2026-01-30 Fri 13:42]
 * TODO Add newline before "block level" message parts if they are the first part of the message and there isn't a blank line above
 * TODO Add support for managing LLM providers/connections
+* DONE Sometimes multiple "Read" tool calls end up on the same line
+CLOSED: [2026-01-30 Fri 13:42]
+* DONE Handle diff in edit tool calls
+CLOSED: [2026-01-30 Fri 16:35]
+- Show the diff after each edit like the TUI
+
 * DONE Make the session buffer look pretty
 CLOSED: [2026-01-30 Fri 15:12]
 With colors!
