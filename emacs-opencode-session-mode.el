@@ -427,7 +427,8 @@ Fallback to a plain busy label when frames are unavailable."
               (tool (opencode-message-part-tool part))
               (rendered (opencode-session--render-message-part message part))
               (tool-part (string= part-type "tool"))
-              (block-tool (and tool-part (member tool '("todowrite" "todoread")))))
+              (block-tool (and tool-part (member tool '("todowrite" "todoread"
+                                                       "edit" "apply_patch")))))
         (when rendered
           (cond
            ((or (string= part-type "text") block-tool)
@@ -466,7 +467,10 @@ Fallback to a plain busy label when frames are unavailable."
          (input (alist-get 'input state))
          (metadata (alist-get 'metadata state))
          (status (or (alist-get 'status state) "pending"))
-         (text (opencode-session--tool-summary tool input metadata status state)))
+         (text (opencode-session--tool-summary tool input metadata status state))
+         (extra (opencode-session--tool-extra-block tool input metadata)))
+    (when (and extra (not (string-empty-p (string-trim extra))))
+      (setq text (concat text "\n" extra)))
     (propertize text 'face 'opencode-session-tool-face)))
 
 (defun opencode-session--tool-summary (tool input metadata status state)
@@ -488,6 +492,8 @@ STATUS and STATE provide additional context for fallbacks."
     (opencode-session--tool-bash input metadata))
    ((string= tool "edit")
     (opencode-session--tool-edit-write "Edit" input metadata))
+   ((string= tool "apply_patch")
+    (opencode-session--tool-apply-patch input metadata))
    ((string= tool "write")
     (opencode-session--tool-edit-write "Write" input metadata))
    ((string= tool "task")
@@ -585,6 +591,16 @@ INPUT and METADATA may include the file path."
                         ""))
          (path (or (opencode-session--display-path file-path) "")))
     (format "→ %s %s" label path)))
+
+(defun opencode-session--tool-apply-patch (_input _metadata)
+  "Render a summary line for patch tool calls."
+  "→ Patch")
+
+(defun opencode-session--tool-extra-block (tool _input metadata)
+  "Return extra block content for TOOL from METADATA."
+  (when (member tool '("edit" "apply_patch"))
+    (when (listp metadata)
+      (opencode-session--nonempty-string (alist-get 'diff metadata)))))
 
 (defun opencode-session--task-summary-current (summary)
   "Return the latest non-pending summary item from SUMMARY."
