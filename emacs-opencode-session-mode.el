@@ -399,11 +399,6 @@ Fallback to a plain busy label when frames are unavailable."
                        (not (string-match-p "\\n\\n+\\'" output)))
               (setq output (concat output "\n")))
             (setq output (concat output rendered "\n")))
-           ;; ((string= part-type "tool")
-           ;;  (when (and (not (string-empty-p output))
-           ;;             (not (string-suffix-p "\n" output)))
-           ;;    (setq output (concat output "\n")))
-           ;;  (setq output (concat output rendered "\n")))
            (t
             (setq output (concat output rendered)))))))
     output))
