@@ -311,6 +311,12 @@ file, include the file name and relevant line numbers."
         :error (lambda (&rest _args)
                  (error "Failed to fetch OpenCode sessions")))))))
 
+(defun opencode-mcp-status ()
+  "Display the status OpenCode's current MCP connections."
+  (interactive)
+  ;; TODO make this a proper UX instead of shelling out
+  (async-shell-command (format "%s mcp list" opencode-server-command)))
+
 (provide 'emacs-opencode)
 
 ;;; emacs-opencode.el ends here
