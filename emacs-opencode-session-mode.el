@@ -386,12 +386,12 @@ Fallback to a plain busy label when frames are unavailable."
   "Render PARTS for MESSAGE into a string."
   (let ((output ""))
     (dolist (entry parts)
-      (let* ((part (cdr entry))
-             (part-type (opencode-message-part-type part))
-             (tool (opencode-message-part-tool part))
-             (rendered (opencode-session--render-message-part message part))
-             (block-tool (and (string= part-type "tool")
-                              (member tool '("todowrite" "todoread")))))
+       (let* ((part (cdr entry))
+              (part-type (opencode-message-part-type part))
+              (tool (opencode-message-part-tool part))
+              (rendered (opencode-session--render-message-part message part))
+              (tool-part (string= part-type "tool"))
+              (block-tool (and tool-part (member tool '("todowrite" "todoread")))))
         (when rendered
           (cond
            ((or (string= part-type "text") block-tool)
@@ -399,6 +399,11 @@ Fallback to a plain busy label when frames are unavailable."
                        (not (string-match-p "\\n\\n+\\'" output)))
               (setq output (concat output "\n")))
             (setq output (concat output rendered "\n")))
+           (tool-part
+            (when (and (not (string-empty-p output))
+                       (not (string-match-p "\\n\\'" output)))
+              (setq output (concat output "\n")))
+            (setq output (concat output rendered)))
            (t
             (setq output (concat output rendered)))))))
     output))
