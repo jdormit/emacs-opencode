@@ -44,7 +44,7 @@
   :group 'emacs-opencode)
 
 (defface opencode-session-input-prompt-face
-  '((t :inherit shadow))
+  '((t :inherit font-lock-constant-face))
   "Face used for the session input prompt."
   :group 'emacs-opencode)
 
