@@ -384,8 +384,11 @@ Fallback to a plain busy label when frames are unavailable."
 (defun opencode-session--apply-user-prefix (message start end)
   "Apply a line indicator for user MESSAGE between START and END."
   (when (and message (string= (opencode-message-role message) "user"))
-    (let* ((marker (propertize "|" 'face 'opencode-session-user-prefix-face))
-           (prefix (concat marker " "))
+    (let* ((color (face-foreground 'opencode-session-user-prefix-face nil t))
+           (marker-face (if color `(:background ,color) 'opencode-session-user-prefix-face))
+           (marker (propertize " " 'face marker-face 'display '(space :width 0.2)))
+           (padding (propertize " " 'display '(space :width 0.6)))
+           (prefix (concat marker padding))
            (prefix-end (if (and (> end start)
                                 (eq (char-before end) ?\n))
                            (1- end)
