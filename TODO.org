@@ -1,22 +1,10 @@
 #+TITLE: Emacs OpenCode TODO
 
-* TODO Handle permission requests
-SSE shape:
-#+begin_src 
-data: {"type":"permission.asked","properties":{"id":"per_c07cae9e70018qPP3AI5xni7y0","sessionID":"ses_3f83afb92ffeWdWJLvwmUlnx0e","permission":"external_directory","patterns":["/Users/jdormit/opencode/*"],"metadata":{"filepath":"/Users/jdormit/opencode","parentDir":"/Users/jdormit/opencode"},"always":["/Users/jdormit/opencode/*"],"tool":{"messageID":"msg_c07cad1970027lMlJoSlY7t8wi","callID":"call_TeppexgaMwOtZxfQpX3miTJN"}}}
-#+end_src
-* TODO Handle question functionality
-- question.asked SSE
-- should prompt the user in emacs via completing-read, with an option to type your own answer
-
-Example SSE:
-#+begin_src 
-data: {"type":"question.asked","properties":{"id":"que_c055308d8001R7q6izrlXP4nzo","sessionID":"ses_3faad41e4ffe8JF0e2lLG0y24o","questions":[{"question":"For tool parts rendering, do you want them inline with message text or as a distinct block (e.g., `[tool]` header + status/output)?","header":"Tool UI","options":[{"label":"Distinct block (Recommended)","description":"Render tool parts as separate block below message content."},{"label":"Inline text","description":"Mix tool info into the message text flow."},{"label":"Other","description":"Specify custom formatting or placement."}]},{"question":"Should tool output be fully rendered or summarized (e.g., first line + truncated)?","header":"Output","options":[{"label":"Summarized (Recommended)","description":"Show brief output with truncation indicator."},{"label":"Full output","description":"Render full tool output in buffer."},{"label":"Other","description":"Specify custom truncation rules."}]}],"tool":{"messageID":"msg_c0552ed20002Z70IEWVcsE36dF","callID":"call_twQ1UXrHcS2qpL0epHDBKXsw"}}}
-#+end_src
-* TODO Address poor performance of SSE buffer/event dispatch
 * IN PROGRESS Buffer-aware commands
-- Ask about region/point/file context.
-- Apply edits to selection or buffer.
+** DONE Ask about region/point/file context.
+CLOSED: [2026-01-29 Thu 17:04]
+** TODO Apply edits to selection or buffer.
+** TODO send context to existing session buffers, not just new ones
 
 The interface for this is something like: an opencode-ask command, which when run in a buffer asks for a prompt, then sends that prompt to a new opencode session for the project the buffer is in (prompting for a directory to run opencode in if the buffer is not in a project).
 
@@ -29,9 +17,8 @@ This will require building out some additional functionality:
 * IN PROGRESS Make the session buffer look pretty
 With colors!
 
-* TODO Handle session.diff messages
-- Show each session.diff payload inside the message list.
-- Provide a dedicated diff UI rendering (mirrors TUI behavior).
+* TODO Handle diff in edit tool calls
+- Show the diff after each edit like the TUI
 
 * TODO Support slash commands in the session buffer
 * TODO Overview buffers (sessions/projects)
@@ -41,12 +28,34 @@ With colors!
 * TODO Session management commands
 - Load session, fork, delete, rename.
 
-* TODO Emacs tool integration (MCP)
-- Expose Emacs access to OpenCode tools.
-  
 * TODO Display tool call errors in the session buffer
-* TODO Handle sub-agents/sub-sessions 
+* TODO Handle sub-agents/sub-sessions
 * TODO Support showing reasoning blocks
+* IN PROGRESS Address poor performance of SSE buffer/event dispatch
+- Batch message renders (idle timer) to reduce repeated `message.part.updated` redraws.
+- Throttle tool part updates; render on status change or completion.
+- Avoid full re-render per part; add incremental text updates where possible.
+- Throttle header/spinner updates during streaming bursts.
+- Queue SSE handlers to drain in-order with fewer timers.
+* DONE Emacs tool integration (MCP)
+CLOSED: [2026-01-30 Fri 01:08]
+- Expose Emacs access to OpenCode tools.
+
+* DONE Handle question functionality
+CLOSED: [2026-01-29 Thu 14:19]
+- question.asked SSE
+- should prompt the user in emacs via completing-read, with an option to type your own answer
+
+Example SSE:
+#+begin_src
+data: {"type":"question.asked","properties":{"id":"que_c055308d8001R7q6izrlXP4nzo","sessionID":"ses_3faad41e4ffe8JF0e2lLG0y24o","questions":[{"question":"For tool parts rendering, do you want them inline with message text or as a distinct block (e.g., `[tool]` header + status/output)?","header":"Tool UI","options":[{"label":"Distinct block (Recommended)","description":"Render tool parts as separate block below message content."},{"label":"Inline text","description":"Mix tool info into the message text flow."},{"label":"Other","description":"Specify custom formatting or placement."}]},{"question":"Should tool output be fully rendered or summarized (e.g., first line + truncated)?","header":"Output","options":[{"label":"Summarized (Recommended)","description":"Show brief output with truncation indicator."},{"label":"Full output","description":"Render full tool output in buffer."},{"label":"Other","description":"Specify custom truncation rules."}]}],"tool":{"messageID":"msg_c0552ed20002Z70IEWVcsE36dF","callID":"call_twQ1UXrHcS2qpL0epHDBKXsw"}}}
+#+end_src
+* DONE Handle permission requests
+CLOSED: [2026-01-29 Thu 10:39]
+SSE shape:
+#+begin_src
+data: {"type":"permission.asked","properties":{"id":"per_c07cae9e70018qPP3AI5xni7y0","sessionID":"ses_3f83afb92ffeWdWJLvwmUlnx0e","permission":"external_directory","patterns":["/Users/jdormit/opencode/*"],"metadata":{"filepath":"/Users/jdormit/opencode","parentDir":"/Users/jdormit/opencode"},"always":["/Users/jdormit/opencode/*"],"tool":{"messageID":"msg_c07cad1970027lMlJoSlY7t8wi","callID":"call_TeppexgaMwOtZxfQpX3miTJN"}}}
+#+end_src
 * DONE Add command to send interrupt to opencode
 CLOSED: [2026-01-29 Thu 00:15]
 * DONE Current Goal: Vertical Slice (Launch → Chat → Stream)
@@ -84,7 +93,7 @@ CLOSED: [2026-01-28 Wed 22:40]
 - should show the todo list with done items checked off
 
 Example SSE:
-#+begin_src 
+#+begin_src
 data: {"type":"todo.updated","properties":{"sessionID":"ses_3fabc1211ffecnI8SVTEFxUGDf","todos":[{"id":"1","content":"Review session/mode SSE handling spots","status":"completed","priority":"high"},{"id":"2","content":"Design plan/build mode state + header","status":"in_progress","priority":"high"},{"id":"3","content":"Plan tool-part rendering + diff display","status":"pending","priority":"high"},{"id":"4","content":"Plan file event handlers + buffer revert","status":"pending","priority":"high"},{"id":"5","content":"Update TODO.org milestones","status":"pending","priority":"medium"}]}}
 #+end_src
 * DONE SSE event handlers API
@@ -108,4 +117,3 @@ CLOSED: [2026-01-28 Wed 12:53]
 - Buffer-local agent state in session mode (select + cycle commands).
 - Show active agent in session header.
 - Send agent name with prompt requests.
-
