@@ -545,6 +545,24 @@ INPUT and METADATA may include the file path."
          (path (or (opencode-session--display-path file-path) "")))
     (format "→ %s %s" label path)))
 
+(defun opencode-session--task-summary-current (summary)
+  "Return the latest non-pending summary item from SUMMARY."
+  (cl-loop for item in (reverse summary)
+           for state = (alist-get 'state item)
+           for status = (alist-get 'status state)
+           when (and status (not (string= status "pending")))
+           return item))
+
+(defun opencode-session--task-summary-line (item)
+  "Return a summary line for ITEM."
+  (let* ((tool (alist-get 'tool item))
+         (state (alist-get 'state item))
+         (title (alist-get 'title state))
+         (tool-label (and tool (capitalize tool)))
+         (title-text (and title (not (string-empty-p title)) title)))
+    (when tool-label
+      (string-join (delq nil (list tool-label title-text)) " "))))
+
 (defun opencode-session--tool-task (input metadata)
   "Render a summary line for the task tool."
   (let* ((subagent (or (alist-get 'subagent_type input)
@@ -552,10 +570,22 @@ INPUT and METADATA may include the file path."
                        "task"))
          (description (or (alist-get 'description input)
                           (alist-get 'title metadata)))
-         (agent-label (format "%s Agent" (capitalize subagent))))
-    (if (and description (not (string-empty-p description)))
-        (format "✱ %s %s" agent-label description)
-      (format "✱ %s" agent-label))))
+         (agent-label (format "%s Task" (capitalize subagent)))
+         (summary (opencode-session--normalize-items (alist-get 'summary metadata)))
+         (count (length summary))
+         (current (opencode-session--task-summary-current summary))
+         (current-line (and current (opencode-session--task-summary-line current))))
+    (if (> count 0)
+        (let ((lines (list (format "✱ %s" agent-label))))
+          (if (and description (not (string-empty-p description)))
+              (push (format "%s (%s toolcalls)" description count) lines)
+            (push (format "%s toolcalls" count) lines))
+          (when current-line
+            (push (format "└ %s" current-line) lines))
+          (string-join (nreverse lines) "\n"))
+      (if (and description (not (string-empty-p description)))
+          (format "✱ %s %s" agent-label description)
+        (format "✱ %s" agent-label)))))
 
 (defun opencode-session--tool-webfetch (input)
   "Render a summary line for the webfetch tool."
