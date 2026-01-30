@@ -287,9 +287,7 @@ file, include the file name and relevant line numbers."
         connection
         :success (lambda (&rest args)
                    (let* ((data (plist-get args :data))
-                          (items (if (listp data)
-                                     (alist-get 'sessions data)
-                                   data))
+                          (items data)
                           (items-list (cond
                                        ((vectorp items) (append items nil))
                                        ((listp items) items)
