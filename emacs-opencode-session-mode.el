@@ -422,13 +422,14 @@ Fallback to a plain busy label when frames are unavailable."
   "Render PARTS for MESSAGE into a string."
   (let ((output ""))
     (dolist (entry parts)
-       (let* ((part (cdr entry))
-              (part-type (opencode-message-part-type part))
-              (tool (opencode-message-part-tool part))
-              (rendered (opencode-session--render-message-part message part))
-              (tool-part (string= part-type "tool"))
-              (block-tool (and tool-part (member tool '("todowrite" "todoread"
-                                                       "edit" "apply_patch")))))
+      (let* ((part (cdr entry))
+             (part-type (opencode-message-part-type part))
+             (tool (opencode-message-part-tool part))
+             (rendered (opencode-session--render-message-part message part))
+             (tool-part (string= part-type "tool"))
+             (block-tool (and tool-part (member tool '("todowrite" "todoread"
+                                                       "edit" "apply_patch"
+                                                       "bash")))))
         (when rendered
           (cond
            ((or (string= part-type "text") block-tool)
@@ -596,11 +597,18 @@ INPUT and METADATA may include the file path."
   "Render a summary line for patch tool calls."
   "→ Patch")
 
-(defun opencode-session--tool-extra-block (tool _input metadata)
-  "Return extra block content for TOOL from METADATA."
-  (when (member tool '("edit" "apply_patch"))
+(defun opencode-session--tool-extra-block (tool input metadata)
+  "Return extra block content for TOOL from INPUT or METADATA."
+  (cond
+   ((member tool '("edit" "apply_patch"))
     (when (listp metadata)
-      (opencode-session--nonempty-string (alist-get 'diff metadata)))))
+      (opencode-session--nonempty-string (alist-get 'diff metadata))))
+   ((string= tool "bash")
+    (let ((command (or (alist-get 'command input)
+                       (when (listp metadata)
+                         (alist-get 'command metadata)))))
+      (when (opencode-session--nonempty-string command)
+        (format "\n$ %s\n" command))))))
 
 (defun opencode-session--task-summary-current (summary)
   "Return the latest non-pending summary item from SUMMARY."
