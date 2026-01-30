@@ -1,8 +1,5 @@
 #+TITLE: Emacs OpenCode TODO
 
-* IN PROGRESS Make the session buffer look pretty
-With colors!
-
 * TODO Handle diff in edit tool calls
 - Show the diff after each edit like the TUI
 
@@ -26,6 +23,10 @@ With colors!
 CLOSED: [2026-01-30 Fri 13:42]
 * TODO Add newline before "block level" message parts if they are the first part of the message and there isn't a blank line above
 * TODO Add support for managing LLM providers/connections
+* DONE Make the session buffer look pretty
+CLOSED: [2026-01-30 Fri 15:12]
+With colors!
+
 * DONE Handle sub-agents/sub-sessions
 CLOSED: [2026-01-30 Fri 13:13]
 * DONE Buffer-aware commands
