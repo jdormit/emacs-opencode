@@ -601,12 +601,20 @@ INPUT and METADATA may include the file path."
   "Render a fallback summary line for TOOL.
 
 INPUT, STATUS, and STATE provide context for the description."
-  (let* ((description (or (alist-get 'description input)
-                          (alist-get 'title state)
+  (let* ((description (or (opencode-session--nonempty-string
+                           (alist-get 'description input))
+                          (opencode-session--nonempty-string
+                           (alist-get 'title state))
                           tool
                           "tool"))
          (suffix (and status (format "[%s]" status))))
     (string-join (delq nil (list (format "✱ %s" description) suffix)) " ")))
+
+(defun opencode-session--nonempty-string (value)
+  "Return VALUE when it is a non-empty string."
+  (when (and (stringp value)
+             (not (string-empty-p value)))
+    value))
 
 (defun opencode-session--display-path (path)
   "Return PATH formatted for display."
