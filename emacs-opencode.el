@@ -92,6 +92,103 @@ When INCLUDE-IDENTIFIERS is non-nil, include slug and ID."
                 (when session-id (format " [%s]" session-id)))
       title)))
 
+(defun opencode--session-items (data)
+  "Normalize session list DATA into a list."
+  (cond
+   ((vectorp data) (append data nil))
+   ((listp data) data)
+   (t nil)))
+
+(defun opencode--session-choices (items)
+  "Return completion choices for session ITEMS."
+  (let ((counts (make-hash-table :test 'equal)))
+    (dolist (item items)
+      (let* ((title (opencode--session-label item))
+             (count (1+ (gethash title counts 0))))
+        (puthash title count counts)))
+    (mapcar (lambda (item)
+              (let* ((title (opencode--session-label item))
+                     (ambiguous (> (gethash title counts 0) 1))
+                     (label (opencode--session-label item ambiguous)))
+                (cons label item)))
+            items)))
+
+(defun opencode--session-buffer-order ()
+  "Return session IDs ordered by most recently visited buffers."
+  (let ((buffer-to-id (make-hash-table :test 'eq)))
+    (maphash (lambda (session-id buffer)
+               (when (buffer-live-p buffer)
+                 (puthash buffer session-id buffer-to-id)))
+             opencode-session--buffers)
+    (delq nil
+          (mapcar (lambda (buffer)
+                    (gethash buffer buffer-to-id))
+                  (buffer-list)))))
+
+(defun opencode--order-sessions-by-buffer (items)
+  "Order ITEMS by recent session buffers, keeping server order otherwise."
+  (let ((ordered-ids (opencode--session-buffer-order))
+        (items-by-id (make-hash-table :test 'equal))
+        (ordered-items nil)
+        (seen (make-hash-table :test 'equal)))
+    (dolist (item items)
+      (let ((session-id (alist-get 'id item)))
+        (when session-id
+          (puthash session-id item items-by-id))))
+    (dolist (session-id ordered-ids)
+      (when-let ((item (gethash session-id items-by-id)))
+        (puthash session-id t seen)
+        (push item ordered-items)))
+    (setq ordered-items (nreverse ordered-items))
+    (dolist (item items)
+      (let ((session-id (alist-get 'id item)))
+        (unless (and session-id (gethash session-id seen))
+          (setq ordered-items (append ordered-items (list item))))))
+    ordered-items))
+
+(defun opencode--select-session (connection prompt on-selected)
+  "Prompt for a session via CONNECTION using PROMPT.
+
+Call ON-SELECTED with the selected session and session info data."
+  (opencode-client-sessions
+   connection
+   :success (lambda (&rest args)
+              (let* ((data (plist-get args :data))
+                     (items (opencode--session-items data))
+                     (ordered-items (opencode--order-sessions-by-buffer items))
+                     (choices (opencode--session-choices ordered-items))
+                     (table (lambda (string pred action)
+                              (if (eq action 'metadata)
+                                  '(metadata (category . opencode-session)
+                                             (display-sort-function . identity)
+                                             (cycle-sort-function . identity))
+                                (complete-with-action action choices string pred))))
+                     (selected (completing-read prompt table nil t))
+                     (info (cdr (assoc selected choices)))
+                     (session (opencode--session-from-data info)))
+                (funcall on-selected session info)))
+   :error (lambda (&rest _args)
+            (error "Failed to fetch OpenCode sessions"))))
+
+(defun opencode--ensure-session-buffer (session connection &optional on-ready)
+  "Open or reuse a buffer for SESSION using CONNECTION.
+
+When ON-READY is non-nil, call it with the session buffer once ready."
+  (let* ((session-id (opencode-session-id session))
+         (existing-buffer (and session-id
+                               (opencode-session--buffer-for-session session-id))))
+    (if (and existing-buffer (buffer-live-p existing-buffer))
+        (progn
+          (with-current-buffer existing-buffer
+            (setq-local opencode-session--connection connection)
+            (when-let ((info (opencode-session-info session)))
+              (opencode-session--update-session info))
+            (opencode-session--ensure-agents connection))
+          (pop-to-buffer existing-buffer)
+          (when on-ready
+            (funcall on-ready existing-buffer)))
+      (opencode-session-open session connection on-ready))))
+
 (defun opencode--project-directory ()
   "Return the current project root directory, if any."
   (when-let ((project (project-current)))
@@ -283,45 +380,71 @@ file, include the file name and relevant line numbers."
     (opencode
      normalized
      (lambda (connection)
-       (opencode-client-sessions
+       (opencode--select-session
         connection
-        :success (lambda (&rest args)
-                   (let* ((data (plist-get args :data))
-                          (items data)
-                          (items-list (cond
-                                       ((vectorp items) (append items nil))
-                                       ((listp items) items)
-                                       (t nil)))
-                          (counts (make-hash-table :test 'equal))
-                          (choices (mapcar (lambda (item)
-                                             (let* ((title (opencode--session-label item))
-                                                    (count (1+ (gethash title counts 0))))
-                                               (puthash title count counts)))
-                                           items-list))
-                          (choices (mapcar (lambda (item)
-                                             (let* ((title (opencode--session-label item))
-                                                    (ambiguous (> (gethash title counts 0) 1))
-                                                    (label (opencode--session-label item ambiguous)))
-                                               (cons label item)))
-                                           items-list))
-                           (selected (completing-read "OpenCode session: " choices nil t))
-                           (data (cdr (assoc selected choices)))
-                           (session (opencode--session-from-data data))
-                           (session-id (opencode-session-id session))
-                           (existing-buffer (and session-id
-                                                 (opencode-session--buffer-for-session
-                                                  session-id))))
-                     (if (and existing-buffer (buffer-live-p existing-buffer))
-                         (progn
-                           (with-current-buffer existing-buffer
-                             (setq-local opencode-session--connection connection)
-                             (when-let ((info (opencode-session-info session)))
-                               (opencode-session--update-session info))
-                             (opencode-session--ensure-agents connection))
-                           (pop-to-buffer existing-buffer))
-                       (opencode-session-open session connection))))
-        :error (lambda (&rest _args)
-                 (error "Failed to fetch OpenCode sessions")))))))
+        "OpenCode session: "
+        (lambda (session _info)
+          (opencode--ensure-session-buffer session connection)))))))
+
+;;;###autoload
+(defun opencode-send-to-session (directory input)
+  "Send INPUT to a selected OpenCode session in DIRECTORY.
+
+When called interactively, prompt for a session then INPUT."
+  (interactive (list (opencode--read-directory "OpenCode directory: ") nil))
+  (let ((normalized (opencode--normalize-directory directory)))
+    (opencode
+     normalized
+     (lambda (connection)
+       (opencode--select-session
+        connection
+        "OpenCode session: "
+        (lambda (session _info)
+          (let ((final-input input))
+            (when (null final-input)
+              (setq final-input
+                    (read-from-minibuffer "OpenCode prompt: " nil nil nil
+                                          'opencode--prompt-history)))
+            (opencode--ensure-session-buffer
+             session
+             connection
+             (lambda (buffer)
+               (with-current-buffer buffer
+                 (opencode-session-insert-input final-input)
+                 (opencode-session-send-input)))))))))))
+
+;;;###autoload
+(defun opencode-send-context-to-session (directory prompt)
+  "Send PROMPT with context to a selected OpenCode session in DIRECTORY.
+
+When called interactively, prompt for a session then PROMPT." 
+  (interactive (list (opencode--read-directory "OpenCode directory: ") nil))
+  (let ((normalized (opencode--normalize-directory directory)))
+    (opencode
+     normalized
+     (lambda (connection)
+       (opencode--select-session
+        connection
+        "OpenCode session: "
+        (lambda (session _info)
+          (let* ((input prompt)
+                 (context (opencode--contextual-snippet))
+                 (final-input (if input
+                                  input
+                                (read-from-minibuffer "OpenCode prompt: " nil nil nil
+                                                      'opencode--prompt-history)))
+                 (final-prompt (if context
+                                   (format "```\n%s\n```\n\n%s"
+                                           context
+                                           final-input)
+                                 final-input)))
+            (opencode--ensure-session-buffer
+             session
+             connection
+             (lambda (buffer)
+               (with-current-buffer buffer
+                 (opencode-session-insert-input final-prompt)
+                 (opencode-session-send-input)))))))))))
 
 (defun opencode-mcp-status ()
   "Display the status OpenCode's current MCP connections."
