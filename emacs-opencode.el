@@ -304,10 +304,22 @@ file, include the file name and relevant line numbers."
                                                     (label (opencode--session-label item ambiguous)))
                                                (cons label item)))
                                            items-list))
-                          (selected (completing-read "OpenCode session: " choices nil t))
-                          (data (cdr (assoc selected choices)))
-                          (session (opencode--session-from-data data)))
-                     (opencode-session-open session connection)))
+                           (selected (completing-read "OpenCode session: " choices nil t))
+                           (data (cdr (assoc selected choices)))
+                           (session (opencode--session-from-data data))
+                           (session-id (opencode-session-id session))
+                           (existing-buffer (and session-id
+                                                 (opencode-session--buffer-for-session
+                                                  session-id))))
+                     (if (and existing-buffer (buffer-live-p existing-buffer))
+                         (progn
+                           (with-current-buffer existing-buffer
+                             (setq-local opencode-session--connection connection)
+                             (when-let ((info (opencode-session-info session)))
+                               (opencode-session--update-session info))
+                             (opencode-session--ensure-agents connection))
+                           (pop-to-buffer existing-buffer))
+                       (opencode-session-open session connection))))
         :error (lambda (&rest _args)
                  (error "Failed to fetch OpenCode sessions")))))))
 

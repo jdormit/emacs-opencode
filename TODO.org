@@ -1,6 +1,5 @@
 #+TITLE: Emacs OpenCode TODO
 
-* TODO Make open-session reuse the existing session buffer if there is one
 * IN PROGRESS Buffer-aware commands
 ** DONE Ask about region/point/file context.
 CLOSED: [2026-01-29 Thu 17:04]
@@ -38,6 +37,8 @@ With colors!
 - Avoid full re-render per part; add incremental text updates where possible.
 - Throttle header/spinner updates during streaming bursts.
 - Queue SSE handlers to drain in-order with fewer timers.
+* DONE Make open-session reuse the existing session buffer if there is one
+CLOSED: [2026-01-30 Fri 12:45]
 * DONE Give connections a unique port so we can have multiple open connections
 CLOSED: [2026-01-30 Fri 12:41]
 * DONE Emacs tool integration (MCP)
