@@ -498,9 +498,7 @@ Fallback to a plain busy label when frames are unavailable."
 (defun opencode-session--tool-error-line (status state)
   "Return a formatted error line when STATUS indicates failure."
   (when (string= status "error")
-    (let ((message (opencode-session--nonempty-string (alist-get 'error state))))
-      (when message
-        (format "Error: %s" message)))))
+    (opencode-session--nonempty-string (alist-get 'error state))))
 
 
 (defun opencode-session--tool-summary (tool input metadata status state)
