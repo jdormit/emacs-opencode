@@ -258,21 +258,149 @@ request completes."
   "Render the header line for the session."
   (let* ((title (or (opencode-session-title opencode-session--session)
                     "OpenCode Session"))
-         (status (or (opencode-session-status opencode-session--session)
-                     "idle"))
-         (agent opencode-session--agent)
-         (agent-label (when (and agent (not (string-empty-p agent)))
-                        (format "[%s]" agent)))
-         (status-label (opencode-session--header-status-label status)))
+          (status (or (opencode-session-status opencode-session--session)
+                      "idle"))
+          (agent opencode-session--agent)
+          (agent-label (when (and agent (not (string-empty-p agent)))
+                         (format "[%s]" agent)))
+          (status-label (opencode-session--header-status-label status))
+          (right (opencode-session--header-right)))
     (setq header-line-format
-          (concat (propertize title 'face 'opencode-session-header-face)
-                  (when agent-label
-                    (concat " "
-                            (propertize agent-label 'face 'opencode-session-agent-face)))
-                  (when (not (string-empty-p status-label))
-                    (concat " "
-                            (propertize status-label
-                                        'face 'opencode-session-spinner-face)))))))
+          (opencode-session--align-header
+           (string-join
+            (delq nil
+                  (list (propertize title 'face 'opencode-session-header-face)
+                        (when agent-label
+                          (propertize agent-label 'face 'opencode-session-agent-face))
+                        (when (not (string-empty-p status-label))
+                          (propertize status-label
+                                      'face 'opencode-session-spinner-face))))
+            " ")
+           right))))
+
+(defun opencode-session--align-header (left right)
+  "Align LEFT and RIGHT strings for the header line.
+
+RIGHT is aligned to the far edge when provided."
+  (if (and right (not (string-empty-p right)))
+      (concat left
+              (propertize " "
+                          'display
+                          `(space :align-to (- right ,(string-width right))))
+              right)
+    left))
+
+(defun opencode-session--header-right ()
+  "Return right-aligned header metadata when available."
+  (when opencode-session--connection
+    (opencode-session--ensure-providers opencode-session--connection))
+  (let* ((context (opencode-session--header-context-string))
+         (cost (opencode-session--header-cost-string)))
+    (when (or context cost)
+      (propertize
+       (string-join
+        (delq nil (list context (when cost (format "(%s)" cost))))
+        " ")
+       'face 'opencode-session-status-face))))
+
+(defun opencode-session--header-cost-string ()
+  "Return total assistant cost formatted as currency."
+  (let ((total (opencode-session--assistant-cost-total)))
+    (when (and (numberp total)
+               (or (> total 0)
+                   (opencode-session--has-assistant-messages-p)))
+      (format "$%.2f" total))))
+
+(defun opencode-session--has-assistant-messages-p ()
+  "Return non-nil when session has assistant messages."
+  (cl-loop for message in opencode-session--messages
+           for info = (opencode-message-info message)
+           for role = (alist-get 'role info)
+           when (string= role "assistant")
+           return t))
+
+(defun opencode-session--assistant-cost-total ()
+  "Return the total cost for assistant messages in the session."
+  (let ((total 0.0))
+    (dolist (message opencode-session--messages total)
+      (let* ((info (opencode-message-info message))
+             (role (alist-get 'role info))
+             (cost (alist-get 'cost info)))
+        (when (and (string= role "assistant") (numberp cost))
+          (setq total (+ total cost)))))))
+
+(defun opencode-session--header-context-string ()
+  "Return the context usage string for the session header."
+  (when-let ((info (opencode-session--last-assistant-info)))
+    (let* ((tokens (alist-get 'tokens info))
+           (total (opencode-session--tokens-total tokens)))
+      (when (numberp total)
+        (let* ((count (opencode-session--format-number total))
+               (percent (opencode-session--context-percent info total)))
+          (if percent
+              (format "%s  %s%%%%" count percent)
+            count))))))
+
+(defun opencode-session--last-assistant-info ()
+  "Return the last assistant message info with output tokens."
+  (cl-loop for message in (reverse opencode-session--messages)
+           for info = (opencode-message-info message)
+           for role = (alist-get 'role info)
+           for tokens = (alist-get 'tokens info)
+           for output = (alist-get 'output tokens)
+           when (and (string= role "assistant")
+                     (numberp output)
+                     (> output 0))
+           return info))
+
+(defun opencode-session--tokens-total (tokens)
+  "Return total tokens from TOKENS metadata."
+  (when (listp tokens)
+    (+ (opencode-session--safe-number (alist-get 'input tokens))
+       (opencode-session--safe-number (alist-get 'output tokens))
+       (opencode-session--safe-number (alist-get 'reasoning tokens))
+       (let ((cache (alist-get 'cache tokens)))
+         (+ (opencode-session--safe-number (alist-get 'read cache))
+            (opencode-session--safe-number (alist-get 'write cache)))))))
+
+(defun opencode-session--safe-number (value)
+  "Return VALUE as a number or zero."
+  (if (numberp value) value 0))
+
+(defun opencode-session--format-number (value)
+  "Return VALUE formatted with thousands separators."
+  (let* ((number (max 0 (truncate value)))
+         (string (number-to-string number))
+         (len (length string))
+         (pos len)
+         (parts nil))
+    (while (> pos 3)
+      (push (substring string (- pos 3) pos) parts)
+      (setq pos (- pos 3)))
+    (push (substring string 0 pos) parts)
+    (string-join parts ",")))
+
+(defun opencode-session--context-percent (info total)
+  "Return context usage percent string for INFO and TOTAL tokens."
+  (when (and opencode-session--connection (numberp total))
+    (let* ((provider-id (alist-get 'providerID info))
+           (model-id (alist-get 'modelID info))
+           (limit (opencode-session--model-context-limit provider-id model-id)))
+      (when (and (numberp limit) (> limit 0))
+        (number-to-string (round (* (/ (float total) limit) 100)))))))
+
+(defun opencode-session--model-context-limit (provider-id model-id)
+  "Return the context limit for PROVIDER-ID and MODEL-ID."
+  (when (and opencode-session--connection provider-id model-id)
+    (when-let* ((providers (opencode-connection-providers opencode-session--connection))
+                (provider (cl-find provider-id providers
+                                   :key (lambda (item) (alist-get 'id item))
+                                   :test #'string=))
+                (models (alist-get 'models provider))
+                (model (alist-get model-id models nil nil #'string=))
+                (limit (alist-get 'limit model))
+                (context (alist-get 'context limit)))
+      context)))
 
 (defun opencode-session--header-status-label (status)
   "Return STATUS label for the header line."
@@ -1044,6 +1172,35 @@ PREVIOUS-NAME is the previous buffer name to compare against."
   (if (opencode-connection-agents connection)
       (opencode-session--apply-default-agent connection)
     (opencode-session--maybe-fetch-agents connection)))
+
+(defun opencode-session--ensure-providers (connection)
+  "Ensure provider list is available for CONNECTION."
+  (when connection
+    (let ((providers (opencode-connection-providers connection)))
+      (cond
+       ((and providers (listp providers)) nil)
+       ((eq providers :loading) nil)
+       (t
+        (setf (opencode-connection-providers connection) :loading)
+        (opencode-client-providers
+         connection
+         :success (lambda (&rest args)
+                    (let* ((data (plist-get args :data))
+                           (items (alist-get 'all data)))
+                      (setf (opencode-connection-providers connection) items)
+                      (opencode-session--refresh-headers connection)))
+         :error (lambda (&rest _args)
+                  (setf (opencode-connection-providers connection) nil))))))))
+
+(defun opencode-session--refresh-headers (connection)
+  "Re-render headers for buffers using CONNECTION."
+  (maphash
+   (lambda (_session-id buffer)
+     (when (buffer-live-p buffer)
+       (with-current-buffer buffer
+         (when (eq opencode-session--connection connection)
+           (opencode-session--render-header)))))
+   opencode-session--buffers))
 
 (defun opencode-session--refresh-agents (connection)
   "Refresh the cached agent list for CONNECTION."

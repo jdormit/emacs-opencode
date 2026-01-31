@@ -12,6 +12,7 @@
   password
   timeout
   agents
+  providers
   process
   sse-process
   sse-state)

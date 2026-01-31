@@ -76,6 +76,15 @@ LIMIT restricts the number of returned messages when provided."
    :success success
    :error error))
 
+(cl-defmethod opencode-client-providers ((conn opencode-connection) &key success error)
+  "Fetch available providers from the server."
+  (opencode-request
+   conn
+   'GET
+   "/provider"
+   :success success
+   :error error))
+
 (cl-defmethod opencode-client-session-prompt-async ((conn opencode-connection) session-id parts &key success error agent)
   "Send PARTS to SESSION-ID asynchronously.
 
