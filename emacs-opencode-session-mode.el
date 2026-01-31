@@ -295,7 +295,9 @@ RIGHT is aligned to the far edge when provided."
   (when opencode-session--connection
     (opencode-session--ensure-providers opencode-session--connection))
   (let* ((context (opencode-session--header-context-string))
-         (cost (opencode-session--header-cost-string)))
+         (cost (and
+                (not (string-empty-p (string-trim (or context ""))))
+                (opencode-session--header-cost-string))))
     (when (or context cost)
       (propertize
        (string-join
