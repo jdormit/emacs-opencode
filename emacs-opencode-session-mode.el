@@ -469,10 +469,39 @@ Fallback to a plain busy label when frames are unavailable."
          (metadata (alist-get 'metadata state))
          (status (or (alist-get 'status state) "pending"))
          (text (opencode-session--tool-summary tool input metadata status state))
+         (error-line (opencode-session--tool-error-line status state))
          (extra (opencode-session--tool-extra-block tool input metadata)))
+    (setq text (opencode-session--tool-attach-status text status))
+    (when error-line
+      (setq text (concat text "\n" error-line)))
     (when (and extra (not (string-empty-p (string-trim extra))))
       (setq text (concat text "\n" extra)))
     (propertize text 'face 'opencode-session-tool-face)))
+
+(defun opencode-session--tool-attach-status (text status)
+  "Append STATUS to the first line of TEXT when missing."
+  (if (and (stringp text)
+           (stringp status)
+           (member status '("pending" "running" "error")))
+      (let ((suffix (format "[%s]" status)))
+        (if (string-match-p (regexp-quote suffix) text)
+            text
+          (let* ((lines (split-string text "\n"))
+                 (first (or (car lines) ""))
+                 (rest (cdr lines))
+                 (first-line (if (string-empty-p first)
+                                 suffix
+                               (format "%s %s" first suffix))))
+            (string-join (cons first-line rest) "\n"))))
+    text))
+
+(defun opencode-session--tool-error-line (status state)
+  "Return a formatted error line when STATUS indicates failure."
+  (when (string= status "error")
+    (let ((message (opencode-session--nonempty-string (alist-get 'error state))))
+      (when message
+        (format "Error: %s" message)))))
+
 
 (defun opencode-session--tool-summary (tool input metadata status state)
   "Return the formatted summary for TOOL using INPUT and METADATA.
@@ -494,7 +523,7 @@ STATUS and STATE provide additional context for fallbacks."
    ((string= tool "edit")
     (opencode-session--tool-edit-write "Edit" input metadata))
    ((string= tool "apply_patch")
-    (opencode-session--tool-apply-patch input metadata))
+     (opencode-session--tool-apply-patch input metadata status state))
    ((string= tool "write")
     (opencode-session--tool-edit-write "Write" input metadata))
    ((string= tool "task")
@@ -593,9 +622,12 @@ INPUT and METADATA may include the file path."
          (path (or (opencode-session--display-path file-path) "")))
     (format "→ %s %s" label path)))
 
-(defun opencode-session--tool-apply-patch (_input _metadata)
+(defun opencode-session--tool-apply-patch (_input _metadata status state)
   "Render a summary line for patch tool calls."
-  "→ Patch")
+  (let ((title (opencode-session--nonempty-string (alist-get 'title state))))
+    (if (and title (string= status "completed"))
+        title
+      "→ Patch")))
 
 (defun opencode-session--tool-extra-block (tool input metadata)
   "Return extra block content for TOOL from INPUT or METADATA."
