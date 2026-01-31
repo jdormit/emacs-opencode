@@ -97,7 +97,7 @@ updated CONNECTION."
   (let* ((default-directory (opencode-connection-directory connection))
          (hostname (opencode-connection-hostname connection))
          (port (opencode-connection-port connection))
-         (command (list opencode-server-command "serve"
+         (command (list (executable-find opencode-server-command) "serve"
                         "--hostname" hostname
                         "--port" (number-to-string port)))
          (buffer (get-buffer-create (format " *opencode-server<%s>*" default-directory)))

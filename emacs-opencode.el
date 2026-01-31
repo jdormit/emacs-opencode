@@ -450,7 +450,7 @@ When called interactively, prompt for a session then PROMPT."
   "Display the status OpenCode's current MCP connections."
   (interactive)
   ;; TODO make this a proper UX instead of shelling out
-  (async-shell-command (format "%s mcp list" opencode-server-command)))
+  (async-shell-command (format "%s mcp list" (executable-find opencode-server-command))))
 
 (provide 'emacs-opencode)
 
