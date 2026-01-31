@@ -224,7 +224,7 @@ and skip prompting unless a prefix arg is supplied."
     (message "Stopped OpenCode server for %s" normalized)))
 
 ;;;###autoload
-(defun opencode (directory &optional on-ready)
+(defun opencode-run-server (directory &optional on-ready)
   "Start or reuse an OpenCode server for DIRECTORY.
 
 When a connection already exists for DIRECTORY, reuse it without restarting
@@ -261,11 +261,11 @@ once the server is ready."
         connection))))
 
 ;;;###autoload
-(defun opencode-new-session (directory)
-  "Create a new session for DIRECTORY and open its buffer."
+(defun opencode (directory)
+  "Create a new OpenCode session for DIRECTORY and open its buffer."
   (interactive (list (opencode--read-directory "OpenCode directory: ")))
   (let ((normalized (opencode--normalize-directory directory)))
-    (opencode
+    (opencode-run-server
      normalized
      (lambda (connection)
        (opencode-request
@@ -288,7 +288,7 @@ once the server is ready."
          (read-from-minibuffer "OpenCode prompt: " nil nil nil
                                'opencode--prompt-history)))
   (let ((normalized (opencode--normalize-directory directory)))
-    (opencode
+    (opencode-run-server
      normalized
      (lambda (connection)
        (opencode-request
@@ -297,15 +297,15 @@ once the server is ready."
         "/session"
         :data `(("directory" . ,normalized))
         :success (lambda (&rest args)
-                  (let* ((data (plist-get args :data))
-                         (session (opencode--session-from-data data)))
-                    (opencode-session-open
-                     session
-                     connection
-                     (lambda (buffer)
-                       (with-current-buffer buffer
-                         (opencode-session-insert-input prompt)
-                         (opencode-session-send-input))))))
+                   (let* ((data (plist-get args :data))
+                          (session (opencode--session-from-data data)))
+                     (opencode-session-open
+                      session
+                      connection
+                      (lambda (buffer)
+                        (with-current-buffer buffer
+                          (opencode-session-insert-input prompt)
+                          (opencode-session-send-input))))))
         :error (lambda (&rest _args)
                  (error "Failed to create OpenCode session")))))))
 
@@ -374,10 +374,10 @@ file, include the file name and relevant line numbers."
 
 ;;;###autoload
 (defun opencode-open-session (directory)
-  "Prompt for a session in DIRECTORY and open its buffer." 
+  "Prompt for a session in DIRECTORY and open its buffer."
   (interactive (list (opencode--read-directory "OpenCode directory: ")))
   (let ((normalized (opencode--normalize-directory directory)))
-    (opencode
+    (opencode-run-server
      normalized
      (lambda (connection)
        (opencode--select-session
@@ -393,7 +393,7 @@ file, include the file name and relevant line numbers."
 When called interactively, prompt for a session then INPUT."
   (interactive (list (opencode--read-directory "OpenCode directory: ") nil))
   (let ((normalized (opencode--normalize-directory directory)))
-    (opencode
+    (opencode-run-server
      normalized
      (lambda (connection)
        (opencode--select-session
@@ -420,7 +420,7 @@ When called interactively, prompt for a session then INPUT."
 When called interactively, prompt for a session then PROMPT." 
   (interactive (list (opencode--read-directory "OpenCode directory: ") nil))
   (let ((normalized (opencode--normalize-directory directory)))
-    (opencode
+    (opencode-run-server
      normalized
      (lambda (connection)
        (opencode--select-session
