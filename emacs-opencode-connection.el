@@ -33,6 +33,36 @@
   :type 'string
   :group 'emacs-opencode)
 
+(defcustom opencode-server-environment nil
+  "Environment variables for OpenCode server processes.
+
+Each entry is a (NAME . VALUE) pair. NAME is a string. VALUE is a string or
+nil. When VALUE is nil, remove NAME from the server process environment.
+Otherwise, set NAME to VALUE (converted with `format')."
+  :type '(repeat (cons (string :tag "Name")
+                       (choice (string :tag "Value")
+                               (const :tag "Unset" nil))))
+  :group 'emacs-opencode)
+
+(defun opencode-connection--process-environment (environment)
+  "Return `process-environment' updated with ENVIRONMENT.
+
+ENVIRONMENT is an alist of (NAME . VALUE) pairs. NAME is a string. VALUE is a
+string or nil. When VALUE is nil, remove NAME from the environment. When VALUE
+is non-nil, set NAME to VALUE (converted with `format')."
+  (let ((updated (copy-sequence process-environment)))
+    (dolist (entry environment)
+      (let* ((name (car entry))
+             (value (cdr entry))
+             (prefix (and (stringp name) (concat name "="))))
+        (when prefix
+          (setq updated (cl-remove-if (lambda (item)
+                                        (string-prefix-p prefix item))
+                                      updated))
+          (when value
+            (push (format "%s=%s" name value) updated)))))
+    updated))
+
 (defun opencode-connection--port-available-p (hostname port)
   "Return non-nil when PORT can be bound on HOSTNAME."
   (when (and port (> port 0))
@@ -96,11 +126,13 @@ HOSTNAME and PORT override the default server config."
 READY-CALLBACK is called when the server reports readiness. Returns the
 updated CONNECTION."
   (let* ((default-directory (opencode-connection-directory connection))
-         (hostname (opencode-connection-hostname connection))
-         (port (opencode-connection-port connection))
-         (command (list (executable-find opencode-server-command) "serve"
-                        "--hostname" hostname
-                        "--port" (number-to-string port)))
+          (hostname (opencode-connection-hostname connection))
+          (port (opencode-connection-port connection))
+          (process-environment (opencode-connection--process-environment
+                                opencode-server-environment))
+          (command (list (executable-find opencode-server-command) "serve"
+                         "--hostname" hostname
+                         "--port" (number-to-string port)))
          (buffer (get-buffer-create (format " *opencode-server<%s>*" default-directory)))
          (process (apply #'start-process "opencode-server" buffer command)))
     (set-process-filter
