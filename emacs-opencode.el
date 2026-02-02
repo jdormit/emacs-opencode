@@ -224,6 +224,19 @@ and skip prompting unless a prefix arg is supplied."
     (message "Stopped OpenCode server for %s" normalized)))
 
 ;;;###autoload
+(defun opencode-shutdown-all ()
+  "Stop all registered OpenCode servers and clear the registry."
+  (interactive)
+  (let ((directories (opencode--registered-directories)))
+    (dolist (directory directories)
+      (let ((connection (opencode--get-connection directory)))
+        (when connection
+          (opencode-sse-close connection)
+          (opencode-connection-stop connection)
+          (opencode--unregister-connection directory)))))
+  (message "Stopped all OpenCode servers"))
+
+;;;###autoload
 (defun opencode-run-server (directory &optional on-ready)
   "Start or reuse an OpenCode server for DIRECTORY.
 
