@@ -211,8 +211,10 @@ Returns the streaming process."
                                (when (memq (process-status proc) '(exit signal))
                                  (when (buffer-live-p buffer)
                                    (with-current-buffer buffer
-                                     (goto-char (point-max))
-                                     (insert "\n[opencode] SSE stream closed"))))))))
+                                     (let ((inhibit-read-only t)
+                                           (inhibit-modification-hooks t))
+                                       (goto-char (point-max))
+                                       (insert "\n[opencode] SSE stream closed")))))))))
     (with-current-buffer buffer
       (setq-local buffer-read-only t)
       (setq-local buffer-undo-list t)
