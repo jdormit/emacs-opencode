@@ -1,5 +1,13 @@
 #+TITLE: Emacs OpenCode TODO
 
+* TODO completion-at-point in session buffer input
+- slach commands
+- @agent
+- file paths, once @file is supported
+* TODO Support @file mentions (inlines file contents into prompt)
+* TODO Support !shell command mentions (inlines shell command output into prompt)
+* TODO Fix unclear wording for permission requests
+E.g. "OpenCode wants to rg foobar .*" or "OpenCode wants to foo/bar/baz.txt". What do those mean?
 * TODO Overview buffers (sessions/projects)
 - List-returning functions for sessions/projects.
 - Thin rendering buffer(s) + completion integration.
