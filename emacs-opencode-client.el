@@ -183,6 +183,7 @@ ANSWERS is a list of string lists aligned to the requested questions."
      'POST
      (format "/session/%s/command" session-id)
      :json payload
+     :parser (lambda () nil)
      :success success
      :error error)))
 
