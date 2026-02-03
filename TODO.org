@@ -1,6 +1,5 @@
 #+TITLE: Emacs OpenCode TODO
 
-* TODO Support slash commands in the session buffer
 * TODO Overview buffers (sessions/projects)
 - List-returning functions for sessions/projects.
 - Thin rendering buffer(s) + completion integration.
@@ -21,6 +20,8 @@
 * TODO Add support for managing LLM providers/connections
 * TODO Font lock in session buffers
 Should syntax highlight markdown and display diffs from the patch tool with diff syntax highlighting.
+* DONE Support slash commands in the session buffer
+CLOSED: [2026-02-03 Tue 16:46]
 * DONE Show token usage metadata in session buffer
 CLOSED: [2026-01-31 Sat 00:45]
 * DONE Show shell command being run in shell tool call

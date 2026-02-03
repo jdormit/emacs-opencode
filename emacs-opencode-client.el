@@ -85,6 +85,15 @@ LIMIT restricts the number of returned messages when provided."
    :success success
    :error error))
 
+(cl-defmethod opencode-client-commands ((conn opencode-connection) &key success error)
+  "Fetch available commands from the server."
+  (opencode-request
+   conn
+   'GET
+   "/command"
+   :success success
+   :error error))
+
 (cl-defmethod opencode-client-session-prompt-async ((conn opencode-connection) session-id parts &key success error agent)
   "Send PARTS to SESSION-ID asynchronously.
 
@@ -161,6 +170,21 @@ ANSWERS is a list of string lists aligned to the requested questions."
    :parser (lambda () nil)
    :success success
    :error error))
+
+(cl-defmethod opencode-client-session-command
+  ((conn opencode-connection) session-id command arguments &key success error agent)
+  "Send COMMAND with ARGUMENTS to SESSION-ID."
+  (let ((payload `((command . ,command)
+                   (arguments . ,(or arguments "")))))
+    (when agent
+      (setq payload (append payload `((agent . ,agent)))))
+    (opencode-request
+     conn
+     'POST
+     (format "/session/%s/command" session-id)
+     :json payload
+     :success success
+     :error error)))
 
 (provide 'emacs-opencode-client)
 

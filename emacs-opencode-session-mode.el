@@ -89,6 +89,9 @@
 
 Each function receives SESSION and INPUT as arguments.")
 
+(defvar opencode-command-arguments-history nil
+  "History list for OpenCode command arguments.")
+
 (defvar-local opencode-session--session nil
   "Session object for the current buffer.")
 
@@ -124,6 +127,7 @@ Each function receives SESSION and INPUT as arguments.")
     (define-key map (kbd "C-c C-p") #'opencode-session-previous-agent)
     (define-key map (kbd "C-c C-r") #'opencode-session-refresh-agents)
     (define-key map (kbd "C-c C-k") #'opencode-session-interrupt)
+    (define-key map (kbd "C-c C-o") #'opencode-command)
     (define-key map (kbd "S-TAB") #'opencode-session-previous-agent)
     (define-key map (kbd "<backtab>") #'opencode-session-previous-agent)
     (define-key map (kbd "RET") #'newline)
@@ -194,11 +198,52 @@ request completes."
         (message "OpenCode input is empty")
       (unless (and opencode-session--connection opencode-session--session)
         (error "OpenCode session is not connected"))
-      (opencode-session--send-input opencode-session--connection
-                                    opencode-session--session
-                                    input)
-      (opencode-session--clear-input)
-      (message "OpenCode message submitted"))))
+      (if (string-prefix-p "/" input)
+          (opencode-session--maybe-send-command opencode-session--connection
+                                                opencode-session--session
+                                                input)
+        (opencode-session--send-input opencode-session--connection
+                                      opencode-session--session
+                                      input)
+        (opencode-session--clear-input)
+        (message "OpenCode message submitted")))))
+
+;;;###autoload
+(defun opencode-command ()
+  "Prompt for an OpenCode command and send it to the current session."
+  (interactive)
+  (unless (derived-mode-p 'opencode-session-mode)
+    (error "Not in an OpenCode session buffer"))
+  (unless (and opencode-session--connection opencode-session--session)
+    (error "OpenCode session is not connected"))
+  (let ((connection opencode-session--connection)
+        (session-id (opencode-session-id opencode-session--session))
+        (agent opencode-session--agent))
+    (opencode-client-commands
+     connection
+     :success (lambda (&rest args)
+                (let* ((data (plist-get args :data))
+                       (items (opencode-session--command-items data))
+                       (names (opencode-session--command-names items)))
+                  (unless names
+                    (error "No OpenCode commands available"))
+                  (let* ((command (completing-read "OpenCode command: " names nil t))
+                         (arguments (read-from-minibuffer
+                                     "OpenCode command args (optional): "
+                                     nil nil nil
+                                     'opencode-command-arguments-history)))
+                    (opencode-client-session-command
+                     connection
+                     session-id
+                     command
+                     arguments
+                     :agent agent
+                     :success (lambda (&rest _args)
+                                (message "OpenCode command queued"))
+                     :error (lambda (&rest _args)
+                              (message "OpenCode: failed to send command"))))))
+     :error (lambda (&rest _args)
+              (error "Failed to fetch OpenCode commands")))))
 
 (defun opencode-session-self-insert (n)
   "Insert N characters into the session input area."
@@ -944,7 +989,44 @@ Restores INPUT when the request fails."
                 (message "OpenCode: message queued"))
      :error (lambda (&rest _args)
               (opencode-session--restore-input input)
-              (message "OpenCode: failed to send message")))))
+                (message "OpenCode: failed to send message")))))
+
+(defun opencode-session--maybe-send-command (connection session input)
+  "Send slash command INPUT to SESSION using CONNECTION when applicable.
+
+Falls back to a normal prompt when INPUT does not match an available command."
+  (let ((buffer (current-buffer)))
+    (opencode-client-commands
+     connection
+     :success (lambda (&rest args)
+                (when (buffer-live-p buffer)
+                  (with-current-buffer buffer
+                    (let* ((command-info (opencode-session--parse-command-input input))
+                           (command (car command-info))
+                           (arguments (cadr command-info))
+                           (data (plist-get args :data))
+                           (items (opencode-session--command-items data))
+                           (names (opencode-session--command-names items))
+                           (matched (and command (member command names))))
+                      (if matched
+                          (progn
+                            (opencode-client-session-command
+                             connection
+                             (opencode-session-id session)
+                             command
+                             arguments
+                             :agent opencode-session--agent
+                             :success (lambda (&rest _args)
+                                        (message "OpenCode command queued"))
+                             :error (lambda (&rest _args)
+                                      (opencode-session--restore-input input)
+                                      (message "OpenCode: failed to send command")))
+                            (opencode-session--clear-input))
+                        (opencode-session--send-input connection session input)
+                        (opencode-session--clear-input)
+                        (message "OpenCode message submitted"))))))
+     :error (lambda (&rest _args)
+              (error "Failed to fetch OpenCode commands")))))
 
 (defun opencode-session--restore-input (input)
   "Restore INPUT into the input area."
@@ -1137,6 +1219,31 @@ PREVIOUS-NAME is the previous buffer name to compare against."
                            (t nil)))
                         primary)))
     (delq nil names)))
+
+(defun opencode-session--command-items (data)
+  "Normalize command list DATA into a list."
+  (cond
+   ((vectorp data) (append data nil))
+   ((listp data) data)
+   (t nil)))
+
+(defun opencode-session--command-names (items)
+  "Return command names for ITEMS."
+  (delq nil (mapcar (lambda (item)
+                      (when (listp item)
+                        (alist-get 'name item)))
+                    items)))
+
+(defun opencode-session--parse-command-input (input)
+  "Return (COMMAND ARGUMENTS) parsed from INPUT.
+
+COMMAND is nil when INPUT is not a slash command." 
+  (if (and (string-prefix-p "/" input)
+           (string-match "^/\\([^ ]+\\)\\(?: \\(.*\\)\\)?$" input))
+      (let ((command (match-string 1 input))
+            (arguments (or (match-string 2 input) "")))
+        (list command arguments))
+    (list nil "")))
 
 (defun opencode-session--maybe-fetch-agents (connection)
   "Fetch and cache agents for CONNECTION when needed."
