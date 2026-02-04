@@ -2,8 +2,11 @@
 
 * TODO completion-at-point in session buffer input
 - slach commands
-- @agent
+- @agent, once @-mentioning agents is supported
 - file paths, once @file is supported
+ - completion providers should be pluggable so new triggers (@agent, @file, !shell) can be added
+ - slash completion only triggers when the input begins with optional whitespace followed by "/"
+* TODO Support @-mentionig agents
 * TODO Support @file mentions (inlines file contents into prompt)
 * TODO Support !shell command mentions (inlines shell command output into prompt)
 * TODO Fix unclear wording for permission requests
