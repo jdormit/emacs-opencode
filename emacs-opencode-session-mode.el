@@ -33,6 +33,17 @@
   :type 'string
   :group 'emacs-opencode)
 
+(defcustom opencode-session-completion-providers
+  '(opencode-session--complete-command)
+  "Completion providers for `opencode-session-mode` input.
+
+Each function is called with point at the current input position and should
+return a completion-at-point result or nil. Providers are tried in order until
+one returns a completion result."
+  :type '(repeat function)
+  :group 'emacs-opencode)
+
+
 (defface opencode-session-user-face
   '((t :inherit default))
   "Face used for user messages."
@@ -110,6 +121,7 @@ Each function receives SESSION and INPUT as arguments.")
 (defvar-local opencode-session--input-prompt-overlay nil
   "Overlay used to display the input prompt.")
 
+
 (defvar-local opencode-session--agent nil
   "Selected agent name for the current session buffer.")
 
@@ -131,6 +143,7 @@ Each function receives SESSION and INPUT as arguments.")
     (define-key map (kbd "S-TAB") #'opencode-session-previous-agent)
     (define-key map (kbd "<backtab>") #'opencode-session-previous-agent)
     (define-key map (kbd "RET") #'newline)
+    (define-key map (kbd "C-<tab>") #'completion-at-point)
     (define-key map [remap self-insert-command] #'opencode-session-self-insert)
     (define-key map [remap yank] #'opencode-session-yank)
     (define-key map [remap delete-backward-char] #'opencode-session-delete-backward)
@@ -151,7 +164,11 @@ Each function receives SESSION and INPUT as arguments.")
   (setq-local opencode-session--messages nil)
   (setq-local opencode-session--agent nil)
   (setq-local opencode-session--agent-index nil)
-  (opencode-session--ensure-markers))
+  (opencode-session--ensure-markers)
+  (add-hook 'completion-at-point-functions
+            #'opencode-session--completion-at-point
+            nil
+            t))
 
 (defun opencode-session-open (session &optional connection on-history-loaded)
   "Open a session buffer for SESSION and return it.
@@ -1234,6 +1251,79 @@ PREVIOUS-NAME is the previous buffer name to compare against."
                         (alist-get 'name item)))
                     items)))
 
+(defun opencode-session--completion-in-input-p ()
+  "Return non-nil when point is within the session input region."
+  (when (and opencode-session--input-start-marker
+             opencode-session--input-marker)
+    (let ((start (marker-position opencode-session--input-start-marker))
+          (end (marker-position opencode-session--input-marker))
+          (pos (point)))
+      (and (<= start pos) (<= pos end)))))
+
+(defun opencode-session--completion-at-point ()
+  "Return completion data for the session input area."
+  (when (opencode-session--completion-in-input-p)
+    (let ((providers opencode-session-completion-providers)
+          (result nil))
+      (while (and providers (not result))
+        (setq result (funcall (car providers)))
+        (setq providers (cdr providers)))
+      result)))
+
+(defun opencode-session--command-completion-bounds ()
+  "Return bounds for a leading slash command completion.
+
+Returns a cons cell (START . END) or nil when the input is not a slash command."
+  (when (and opencode-session--input-start-marker
+             opencode-session--input-marker)
+    (let ((start (marker-position opencode-session--input-start-marker))
+          (end (marker-position opencode-session--input-marker))
+          (pos (point)))
+      (when (and (<= start pos) (<= pos end))
+        (save-excursion
+          (goto-char start)
+          (skip-chars-forward " \t" end)
+          (when (and (< (point) end) (eq (char-after) ?/))
+            (forward-char 1)
+            (let ((command-start (point)))
+              (skip-chars-forward "^ \t\n" end)
+              (let ((command-end (point)))
+                (when (and (<= command-start pos) (<= pos command-end))
+                  (cons command-start command-end))))))))))
+
+(defun opencode-session--fetch-commands (connection)
+  "Fetch and cache available commands for CONNECTION."
+  (let ((session-buffer (current-buffer)))
+    (opencode-connection-ensure-commands
+     connection
+     (lambda (_items)
+       (when (buffer-live-p session-buffer)
+         (with-current-buffer session-buffer
+           (when (eq opencode-session--connection connection)
+             (completion-at-point))))))))
+
+(defun opencode-session--complete-command ()
+  "Return completion data for leading slash commands."
+  (when-let ((bounds (opencode-session--command-completion-bounds)))
+    (let* ((start (car bounds))
+           (end (cdr bounds))
+           (connection opencode-session--connection))
+      (when connection
+        (let ((commands (opencode-connection-commands connection)))
+          (cond
+           ((eq commands :loading) nil)
+           ((null commands)
+            (opencode-session--fetch-commands connection)
+            (message "OpenCode: loading commands")
+            nil)
+           (t
+            (let* ((items (opencode-session--command-items commands))
+                   (names (opencode-session--command-names items)))
+              (when (and names (listp names))
+                (list start end names
+                      :exclusive 'no
+                      :company-prefix-length 0))))))))))
+
 (defun opencode-session--parse-command-input (input)
   "Return (COMMAND ARGUMENTS) parsed from INPUT.
 
@@ -1286,20 +1376,12 @@ COMMAND is nil when INPUT is not a slash command."
   "Ensure provider list is available for CONNECTION."
   (when connection
     (let ((providers (opencode-connection-providers connection)))
-      (cond
-       ((and providers (listp providers)) nil)
-       ((eq providers :loading) nil)
-       (t
-        (setf (opencode-connection-providers connection) :loading)
-        (opencode-client-providers
+      (unless (or (and providers (or (vectorp providers) (listp providers)))
+                  (eq providers :loading))
+        (opencode-connection-ensure-providers
          connection
-         :success (lambda (&rest args)
-                    (let* ((data (plist-get args :data))
-                           (items (alist-get 'all data)))
-                      (setf (opencode-connection-providers connection) items)
-                      (opencode-session--refresh-headers connection)))
-         :error (lambda (&rest _args)
-                  (setf (opencode-connection-providers connection) nil))))))))
+         (lambda (_items)
+           (opencode-session--refresh-headers connection)))))))
 
 (defun opencode-session--refresh-headers (connection)
   "Re-render headers for buffers using CONNECTION."

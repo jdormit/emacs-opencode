@@ -3,6 +3,9 @@
 (require 'cl-lib)
 (require 'subr-x)
 
+(declare-function opencode-client-commands "emacs-opencode-client" (conn &key success error))
+(declare-function opencode-client-providers "emacs-opencode-client" (conn &key success error))
+
 (cl-defstruct (opencode-connection (:constructor opencode-connection-create))
   base-url
   hostname
@@ -12,6 +15,7 @@
   password
   timeout
   agents
+  commands
   providers
   process
   sse-process
@@ -112,13 +116,68 @@ HOSTNAME and PORT override the default server config."
      :directory (file-name-as-directory (expand-file-name directory))
      :timeout 10)))
 
-(defun opencode-connection--maybe-ready (process output ready-callback)
+(defun opencode-connection--maybe-ready (process output connection ready-callback)
   "Process OUTPUT and call READY-CALLBACK when server is ready."
   (when (and ready-callback
              (not (process-get process 'opencode-ready)))
     (when (string-match-p "opencode server listening on" output)
       (process-put process 'opencode-ready t)
-      (funcall ready-callback process))))
+      (funcall ready-callback process)
+      (opencode-connection-ensure-providers connection)
+      (opencode-connection-ensure-commands connection))))
+
+(defun opencode-connection-ensure-commands (connection &optional on-success on-error)
+  "Ensure commands are fetched and cached for CONNECTION.
+
+ON-SUCCESS is called with ITEMS when available. ON-ERROR is called on failure."
+  (require 'emacs-opencode-client)
+  (let ((commands (opencode-connection-commands connection)))
+    (cond
+     ((and commands (or (vectorp commands) (listp commands)))
+      (when on-success (funcall on-success commands))
+      commands)
+     ((eq commands :loading) nil)
+     (t
+      (setf (opencode-connection-commands connection) :loading)
+      (opencode-client-commands
+       connection
+       :success (lambda (&rest args)
+                  (let ((data (plist-get args :data)))
+                    (setf (opencode-connection-commands connection) data)
+                    (when on-success
+                      (funcall on-success data))))
+       :error (lambda (&rest _args)
+                (setf (opencode-connection-commands connection) nil)
+                (if on-error
+                    (funcall on-error)
+                  (message "OpenCode: failed to load commands"))))))))
+
+(defun opencode-connection-ensure-providers (connection &optional on-success on-error)
+  "Ensure providers are fetched and cached for CONNECTION.
+
+ON-SUCCESS is called with ITEMS when available. ON-ERROR is called on failure."
+  (require 'emacs-opencode-client)
+  (let ((providers (opencode-connection-providers connection)))
+    (cond
+     ((and providers (or (vectorp providers) (listp providers)))
+      (when on-success (funcall on-success providers))
+      providers)
+     ((eq providers :loading) nil)
+     (t
+      (setf (opencode-connection-providers connection) :loading)
+      (opencode-client-providers
+       connection
+       :success (lambda (&rest args)
+                  (let* ((data (plist-get args :data))
+                         (items (alist-get 'all data)))
+                    (setf (opencode-connection-providers connection) items)
+                    (when on-success
+                      (funcall on-success items))))
+       :error (lambda (&rest _args)
+                (setf (opencode-connection-providers connection) nil)
+                (if on-error
+                    (funcall on-error)
+                  (message "OpenCode: failed to load providers"))))))))
 
 (defun opencode-connection-start (connection &optional ready-callback)
   "Start an OpenCode server for CONNECTION.
@@ -142,7 +201,7 @@ updated CONNECTION."
          (with-current-buffer buffer
            (goto-char (point-max))
            (insert output)))
-       (opencode-connection--maybe-ready proc output ready-callback)))
+       (opencode-connection--maybe-ready proc output connection ready-callback)))
     (setf (opencode-connection-process connection) process)
     connection))
 
