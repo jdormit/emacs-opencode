@@ -1,63 +1,68 @@
 #+TITLE: Emacs OpenCode Architecture
 
 * Overview
-This project provides an Emacs-native client for OpenCode. It can launch and
-control a local OpenCode server, connect to existing servers, and offer a
-chat-first workflow inside Emacs while also supporting integrations with Emacs
-buffers and tools. The design favors thin, composable APIs with minimal local
-state. All session and project metadata are fetched on-demand from the server.
+This project is an Emacs-native client for OpenCode. It is designed to make the
+OpenCode workflow feel like a first-class Emacs experience: start or attach to a
+server, open a session, and work in a dedicated buffer where prompts, responses,
+and tool interactions are surfaced as a conversational log. The server remains
+the source of truth; the Emacs side focuses on orchestration, UI, and a small
+amount of local state needed for a smooth editing experience.
 
 * Core Principles
-- Modular, loosely-coupled architecture.
-- On-demand data: avoid persisting local state when possible.
 - Emacs-first UX: native buffers, commands, and keybindings.
-- Extensible API: list-returning functions power interactive views and external
-  integrations.
-- Server-first: OpenCode server is the source of truth.
+- Server-first data: OpenCode remains authoritative for sessions and messages.
+- Thin orchestration: the client coordinates flows without reimplementing core
+  server behavior.
+- Streaming-first interaction: the UI updates incrementally as work progresses.
+- Small, intentional state: cache only what improves responsiveness and display.
 
 * High-Level Architecture
-- Entry point (emacs-opencode.el)
-  - User commands, top-level configuration, session lifecycle orchestration.
-- HTTP client (emacs-opencode-client.el)
-  - Low-level API calls to OpenCode (request.el).
-  - Handles auth headers, base URL, error decoding.
-- Streaming/events (emacs-opencode-stream.el)
-  - SSE event stream to drive incremental output and permission prompts.
-- UI buffers
-  - Chat buffers: Comint-like interaction and streaming output.
-  - Overview buffers: projects/sessions list, backed by list-returning helpers.
-- Integrations
-  - Emacs buffer-aware commands (region/point context).
-  - MCP integration for exposing Emacs to OpenCode tools.
+- Entry and commands
+  - Interactive entry points create or attach to a server, then open sessions.
+  - Commands layer provides the user-facing interface and light orchestration.
+- Connection lifecycle
+  - Manages server processes, connectivity checks, and shared connection state.
+  - Keeps the working directory and server details aligned with Emacs projects.
+- Transport and streaming
+  - Encapsulates request/response flows and streaming updates.
+  - Feeds incremental updates to session buffers for a live experience.
+- Session UI
+  - Dedicated session buffers render history, streaming output, and input prompts.
+  - Session buffers are the primary surface for interaction and state display.
+- Models and state
+  - Structured session/message models back buffer rendering.
+  - Local caches exist to drive selection, display, and completion.
 
-* Data Model Strategy
-- Minimal local cache; fetch data from API per command.
-- Session titles from OpenCode used to name buffers.
-- Overview buffers re-fetch on refresh and support completion frameworks.
+* State and Caching
+- The server owns session data; the client reflects it in Emacs buffers.
+- Session buffers keep the current view state (messages, status, agent, input).
+- Light caches (agents, providers, commands) are maintained for completion and
+  header rendering, and are refreshed as needed.
 
 * Primary Workflows
 ** Start and connect
-- Launch opencode serve subprocess in project directory.
-- Connect to server (health check + optional auth).
-- Create a new session and open a chat buffer named after session title.
+- Choose a project directory and start or attach to a server.
+- Validate connectivity and prepare a session buffer.
 
-** Messaging
-- User sends prompt from chat buffer.
-- Send prompt asynchronously to /session/:id/prompt_async.
-- Stream responses from /event and append to buffer.
+** Conversation flow
+- User enters a prompt in the session buffer.
+- The client dispatches the request and streams updates back into the buffer.
+- The buffer maintains a readable log and provides an editable input area.
 
-** Session management
-- List sessions and projects from the server.
-- Open existing sessions, fork, delete, etc.
+** Session navigation
+- List and open existing sessions from the server.
+- Reuse the most recent session buffers when possible.
 
-* OpenCode API Usage
-- /global/health for connectivity checks.
-- /session for creating and listing sessions.
-- /session/:id/message and /session/:id/prompt_async for prompts.
-- /event for SSE stream of responses and permissions.
+** Agent and command use
+- Select or cycle available agents for the session.
+- Send slash-style commands when appropriate.
 
-* Future Extensions
-- Session overview dashboard grouped by project.
-- Buffer-aware prompt helpers (region, defun, file).
-- Permission prompt UI for tool invocations.
-- MCP integration for Emacs tools.
+** Interactive prompts
+- When the server needs user input (permissions or questions), the client
+  requests a choice in the minibuffer and replies on the user's behalf.
+
+* Server Interaction Model
+- The client is a thin shell around the server: it issues requests, receives
+  updates, and keeps the UI in sync.
+- Streaming is treated as a first-class path for user feedback and progress.
+- Error handling is user-visible and fail-fast to keep the UI consistent.
