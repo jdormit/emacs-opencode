@@ -18,20 +18,31 @@ amount of local state needed for a smooth editing experience.
 
 * High-Level Architecture
 - Entry and commands
-  - Interactive entry points create or attach to a server, then open sessions.
-  - Commands layer provides the user-facing interface and light orchestration.
+  - `opencode-run-server` normalizes a directory and registers one connection per
+    directory in a hash table for reuse across commands.
+  - Entry points call into the client layer using the current connection and
+    open or reuse a session buffer.
 - Connection lifecycle
-  - Manages server processes, connectivity checks, and shared connection state.
-  - Keeps the working directory and server details aligned with Emacs projects.
-- Transport and streaming
-  - Encapsulates request/response flows and streaming updates.
-  - Feeds incremental updates to session buffers for a live experience.
+  - A connection stores base URL, port, directory, and process handles.
+  - Server startup spawns the `opencode serve` process, waits for the ready log
+    line, then performs a health check before marking the connection ready.
+- Transport
+  - All HTTP requests flow through `opencode-request`, which builds URLs from
+    the connection base URL and applies auth headers/timeouts.
+- Streaming
+  - SSE uses a dedicated curl process and buffer, with a small parser state
+    machine that collects data lines and dispatches decoded JSON payloads.
+  - Large diff payloads are intentionally skipped to keep parsing fast.
 - Session UI
-  - Dedicated session buffers render history, streaming output, and input prompts.
-  - Session buffers are the primary surface for interaction and state display.
-- Models and state
-  - Structured session/message models back buffer rendering.
-  - Local caches exist to drive selection, display, and completion.
+  - Session buffers are backed by model structs and maintain message parts,
+    markers for the input region, and header rendering state.
+  - Incremental updates from streaming events mutate messages and re-render
+    affected regions in place.
+- Models and caches
+  - Sessions, messages, and parts are modeled with `cl-defstruct` and stored in
+    buffer-local state for rendering.
+  - Agents/providers/commands are cached on the connection for completion and
+    header metadata.
 
 * State and Caching
 - The server owns session data; the client reflects it in Emacs buffers.
