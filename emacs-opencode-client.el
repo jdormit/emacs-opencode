@@ -9,7 +9,7 @@
 
 (declare-function opencode--json-read "emacs-opencode-sse")
 
-(cl-defmethod opencode-request ((conn opencode-connection) method path &rest args &key data json parser headers &allow-other-keys)
+(cl-defmethod opencode-request ((conn opencode-connection) method path &rest args &key data json parser headers timeout &allow-other-keys)
   "Send a raw HTTP request using CONN.
 
 METHOD is a HTTP verb symbol like `GET` or `POST`. PATH is appended to the
@@ -25,7 +25,10 @@ ARGS are forwarded to `request`."
          (payload (when json (json-encode json)))
          (merged-headers (if json
                              (append headers '(("Content-Type" . "application/json")))
-                           headers)))
+                            headers))
+         (timeout-value (if (plist-member args :timeout)
+                            timeout
+                          (or (opencode-connection-timeout conn) 10))))
     (apply
      #'request
      url
@@ -34,7 +37,7 @@ ARGS are forwarded to `request`."
      :parser (or parser #'opencode--json-read)
      :headers merged-headers
      :auth auth
-     :timeout (or (opencode-connection-timeout conn) 10)
+     :timeout timeout-value
      args)))
 
 (cl-defmethod opencode-client-health ((conn opencode-connection) &key success error)
@@ -184,6 +187,7 @@ ANSWERS is a list of string lists aligned to the requested questions."
      (format "/session/%s/command" session-id)
      :json payload
      :parser (lambda () nil)
+     :timeout nil
      :success success
      :error error)))
 
