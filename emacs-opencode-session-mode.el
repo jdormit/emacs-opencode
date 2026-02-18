@@ -1682,6 +1682,18 @@ The return value is a cons of (CHOICES . LOOKUP)."
     (error "OpenCode session is not connected"))
   (opencode-session--refresh-agents opencode-session--connection))
 
+(defun opencode-session--apply-model-selection (provider-id model-id)
+  "Apply PROVIDER-ID and MODEL-ID as the active model.
+Update recent models list, buffer state, and header."
+  (let ((key (cons provider-id model-id)))
+    (setq opencode-session--recent-models
+          (cons key (cl-remove key opencode-session--recent-models
+                               :test #'equal))))
+  (setq-local opencode-session--provider-id provider-id)
+  (setq-local opencode-session--model-id model-id)
+  (opencode-session--render-header)
+  (message "OpenCode model: %s/%s" provider-id model-id))
+
 (defun opencode-session-select-model ()
   "Select a provider and model for the current session buffer."
   (interactive)
@@ -1702,19 +1714,190 @@ The return value is a cons of (CHOICES . LOOKUP)."
       (let ((provider-id (plist-get candidate :provider-id))
             (model-id (plist-get candidate :model-id))
             (connected-p (plist-get candidate :connected-p)))
-        (unless connected-p
-          (error "Provider %s is not connected" provider-id))
-        (let ((key (cons provider-id model-id)))
-          (setq opencode-session--recent-models
-                (cons key (cl-remove key opencode-session--recent-models
-                                     :test #'equal))))
-        (setq-local opencode-session--provider-id provider-id)
-        (setq-local opencode-session--model-id model-id)
-        (opencode-session--render-header)
-        (message "OpenCode model: %s/%s" provider-id model-id)))))
+        (if connected-p
+            (opencode-session--apply-model-selection provider-id model-id)
+          (let ((buffer (current-buffer)))
+            (opencode-session--connect-provider
+             provider-id
+             (lambda (&rest _ignored)
+               (when (buffer-live-p buffer)
+                 (with-current-buffer buffer
+                   (opencode-session--apply-model-selection
+                    provider-id model-id)))))))))))
 
 (defalias 'opencode-session-connect-provider #'opencode-session-select-model
   "Select a provider and model for the current session buffer.")
+
+(defun opencode-session--refresh-providers (connection &optional on-success)
+  "Force refresh the provider cache for CONNECTION.
+
+ON-SUCCESS is called when providers are loaded."
+  (setf (opencode-connection-providers connection) nil)
+  (setf (opencode-connection-provider-catalog connection) nil)
+  (opencode-connection-ensure-providers
+   connection
+   (lambda (items)
+     (opencode-session--refresh-headers connection)
+     (when on-success
+       (funcall on-success items)))))
+
+(defun opencode-session--post-auth-refresh (connection callback)
+  "Dispose instance state for CONNECTION, then refresh providers.
+
+CALLBACK is passed through to `opencode-session--refresh-providers'."
+  (let ((restart-sse
+         (lambda ()
+           (opencode-sse-close connection)
+           (opencode-sse-open connection))))
+    (opencode-client-instance-dispose
+     connection
+     :success (lambda (&rest _args)
+                (funcall restart-sse)
+                (opencode-session--refresh-providers connection callback))
+     :error (lambda (&rest _args)
+              (message "OpenCode: failed to dispose instance; refreshing providers")
+              (funcall restart-sse)
+              (opencode-session--refresh-providers connection callback)))))
+
+(defun opencode-session--connect-provider (provider-id callback)
+  "Run the auth flow for PROVIDER-ID, then call CALLBACK on success."
+  (let ((connection opencode-session--connection))
+    (unless connection
+      (error "OpenCode session is not connected"))
+    (message "OpenCode: fetching auth methods for %s..." provider-id)
+    (opencode-client-provider-auth-methods
+     connection
+     :success (lambda (&rest args)
+                (let* ((data (plist-get args :data))
+                       (methods (opencode-session--provider-auth-methods
+                                 provider-id data)))
+                  (opencode-session--run-auth-flow
+                   connection provider-id methods callback)))
+     :error (lambda (&rest _args)
+              (message "OpenCode: failed to fetch auth methods, trying API key")
+              (opencode-session--run-auth-flow
+               connection provider-id
+               '(((type . "api") (label . "API key")))
+               callback)))))
+
+(defun opencode-session--provider-auth-methods (provider-id data)
+  "Return auth methods for PROVIDER-ID from DATA.
+
+Falls back to a single API key method when none are found."
+  (let* ((methods (or (alist-get (intern provider-id) data)
+                      (alist-get provider-id data nil nil #'string=))))
+    (if (and methods (or (listp methods) (vectorp methods)))
+        (opencode-session--normalize-items methods)
+      '(((type . "api") (label . "API key"))))))
+
+(defun opencode-session--run-auth-flow (connection provider-id methods callback)
+  "Run auth for PROVIDER-ID on CONNECTION using METHODS, then CALLBACK."
+  (let* ((method (if (= (length methods) 1)
+                     (car methods)
+                   (opencode-session--choose-auth-method methods)))
+         (method-type (alist-get 'type method))
+         (method-index (cl-position method methods :test #'equal)))
+    (cond
+     ((string= method-type "api")
+      (opencode-session--auth-api-key connection provider-id callback))
+     ((string= method-type "oauth")
+      (opencode-session--auth-oauth
+       connection provider-id method-index callback))
+     (t (error "OpenCode: unsupported auth method type %s" method-type)))))
+
+(defun opencode-session--choose-auth-method (methods)
+  "Prompt the user to choose from METHODS."
+  (let* ((labels (mapcar (lambda (m) (alist-get 'label m)) methods))
+         (completion-extra-properties
+          '(:display-sort-function identity :cycle-sort-function identity))
+         (selection (completing-read "OpenCode auth method: " labels nil t))
+         (index (cl-position selection labels :test #'string=)))
+    (nth index methods)))
+
+(defun opencode-session--auth-api-key (connection provider-id callback)
+  "Prompt for an API key for PROVIDER-ID on CONNECTION, then CALLBACK."
+  (let ((key (read-string (format "API key for %s: " provider-id))))
+    (when (string-empty-p key)
+      (error "OpenCode: API key cannot be empty"))
+    (message "OpenCode: setting API key for %s..." provider-id)
+    (opencode-client-auth-set
+     connection
+     provider-id
+     `((type . "api") (key . ,key))
+     :success (lambda (&rest _args)
+                (message "OpenCode: %s connected" provider-id)
+                (opencode-session--post-auth-refresh connection callback))
+     :error (lambda (&rest _args)
+              (message "OpenCode: failed to set API key for %s" provider-id)))))
+
+(defun opencode-session--auth-oauth (connection provider-id method-index callback)
+  "Run OAuth flow for PROVIDER-ID on CONNECTION using METHOD-INDEX.
+
+CALLBACK is called on successful authorization."
+  (message "OpenCode: starting OAuth for %s..." provider-id)
+  (opencode-client-provider-oauth-authorize
+   connection
+   provider-id
+   method-index
+   :success (lambda (&rest args)
+              (let* ((data (plist-get args :data))
+                     (url (alist-get 'url data))
+                     (method (alist-get 'method data))
+                     (instructions (alist-get 'instructions data)))
+                (when instructions
+                  (message "OpenCode: %s" instructions))
+                (when url
+                  (let ((browse-url-browser-function #'browse-url-default-browser))
+                    (browse-url url)))
+                (cond
+                 ((string= method "code")
+                  (opencode-session--auth-oauth-code
+                   connection provider-id method-index callback))
+                 ((string= method "auto")
+                  (opencode-session--auth-oauth-auto
+                   connection provider-id method-index callback))
+                 (t (error "OpenCode: unknown OAuth method %s" method)))))
+   :error (lambda (&rest _args)
+            (message "OpenCode: OAuth authorization failed for %s"
+                     provider-id))))
+
+(defun opencode-session--auth-oauth-code (connection provider-id method-index callback)
+  "Complete OAuth code flow for PROVIDER-ID on CONNECTION.
+
+METHOD-INDEX identifies the auth method.  CALLBACK is called on success."
+  (let ((code (read-string
+               (format "Authorization code for %s: " provider-id))))
+    (when (string-empty-p code)
+      (error "OpenCode: authorization code cannot be empty"))
+    (message "OpenCode: completing OAuth for %s..." provider-id)
+    (opencode-client-provider-oauth-callback
+     connection
+     provider-id
+     method-index
+     :code code
+     :success (lambda (&rest _args)
+                (message "OpenCode: %s connected" provider-id)
+                (opencode-session--post-auth-refresh connection callback))
+     :error (lambda (&rest _args)
+              (message "OpenCode: OAuth callback failed for %s"
+                       provider-id)))))
+
+(defun opencode-session--auth-oauth-auto (connection provider-id method-index callback)
+  "Complete OAuth auto flow for PROVIDER-ID on CONNECTION.
+
+METHOD-INDEX identifies the auth method.  CALLBACK is called on success.
+This is a long-polling call that waits for browser authorization."
+  (message "OpenCode: waiting for browser authorization for %s..." provider-id)
+  (opencode-client-provider-oauth-callback
+   connection
+   provider-id
+   method-index
+   :success (lambda (&rest _args)
+              (message "OpenCode: %s connected" provider-id)
+              (opencode-session--post-auth-refresh connection callback))
+   :error (lambda (&rest _args)
+            (message "OpenCode: OAuth callback failed for %s"
+                     provider-id))))
 
 (defun opencode-session-interrupt ()
   "Interrupt the active prompt for the current session."

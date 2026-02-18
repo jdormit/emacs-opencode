@@ -97,6 +97,66 @@ LIMIT restricts the number of returned messages when provided."
    :success success
    :error error))
 
+(cl-defmethod opencode-client-instance-dispose ((conn opencode-connection) &key success error)
+  "Dispose the current OpenCode instance for CONN."
+  (opencode-request
+   conn
+   'POST
+   "/instance/dispose"
+   :parser (lambda () nil)
+   :success success
+   :error error))
+
+(cl-defmethod opencode-client-provider-auth-methods ((conn opencode-connection) &key success error)
+  "Fetch available auth methods for all providers."
+  (opencode-request
+   conn
+   'GET
+   "/provider/auth"
+   :success success
+   :error error))
+
+(cl-defmethod opencode-client-provider-oauth-authorize
+  ((conn opencode-connection) provider-id method-index &key success error)
+  "Start OAuth authorization for PROVIDER-ID using METHOD-INDEX."
+  (opencode-request
+   conn
+   'POST
+   (format "/provider/%s/oauth/authorize" provider-id)
+   :json `((method . ,method-index))
+   :success success
+   :error error))
+
+(cl-defmethod opencode-client-provider-oauth-callback
+  ((conn opencode-connection) provider-id method-index &key code success error)
+  "Complete OAuth callback for PROVIDER-ID using METHOD-INDEX.
+
+CODE is the authorization code for the \"code\" flow."
+  (let ((payload `((method . ,method-index))))
+    (when code
+      (setq payload (append payload `((code . ,code)))))
+    (opencode-request
+     conn
+     'POST
+     (format "/provider/%s/oauth/callback" provider-id)
+     :json payload
+     :timeout nil
+     :success success
+     :error error)))
+
+(cl-defmethod opencode-client-auth-set
+  ((conn opencode-connection) provider-id auth-info &key success error)
+  "Set auth credentials for PROVIDER-ID.
+
+AUTH-INFO is an alist representing the auth payload."
+  (opencode-request
+   conn
+   'PUT
+   (format "/auth/%s" provider-id)
+   :json auth-info
+   :success success
+   :error error))
+
 (cl-defmethod opencode-client-session-prompt-async ((conn opencode-connection) session-id parts &key success error agent model)
   "Send PARTS to SESSION-ID asynchronously.
 
