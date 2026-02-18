@@ -17,6 +17,7 @@
   agents
   commands
   providers
+  provider-catalog
   process
   sse-process
   sse-state)
@@ -165,19 +166,22 @@ ON-SUCCESS is called with ITEMS when available. ON-ERROR is called on failure."
      ((eq providers :loading) nil)
      (t
       (setf (opencode-connection-providers connection) :loading)
+      (setf (opencode-connection-provider-catalog connection) :loading)
       (opencode-client-providers
        connection
        :success (lambda (&rest args)
                   (let* ((data (plist-get args :data))
                          (items (alist-get 'all data)))
-                    (setf (opencode-connection-providers connection) items)
-                    (when on-success
-                      (funcall on-success items))))
+                     (setf (opencode-connection-providers connection) items)
+                     (setf (opencode-connection-provider-catalog connection) data)
+                     (when on-success
+                       (funcall on-success items))))
        :error (lambda (&rest _args)
-                (setf (opencode-connection-providers connection) nil)
-                (if on-error
-                    (funcall on-error)
-                  (message "OpenCode: failed to load providers"))))))))
+                 (setf (opencode-connection-providers connection) nil)
+                 (setf (opencode-connection-provider-catalog connection) nil)
+                 (if on-error
+                     (funcall on-error)
+                   (message "OpenCode: failed to load providers"))))))))
 
 (defun opencode-connection-start (connection &optional ready-callback)
   "Start an OpenCode server for CONNECTION.
