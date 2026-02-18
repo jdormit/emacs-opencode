@@ -143,18 +143,24 @@ Signals an error when DATA is not valid JSON."
     (opencode-sse--write-state connection :data
                                (if current (concat current "\n" value) value))))
 
+(defun opencode-sse--extract-event-type (data)
+  "Extract the event type from raw SSE DATA without JSON parsing.
+Returns the type string, or nil if it cannot be extracted."
+  (when (string-match "\\`{\"type\":\"\\([^\"]+\\)\"" data)
+    (match-string 1 data)))
+
 (defun opencode-sse--finalize-event (connection)
   "Finalize and dispatch event from CONNECTION SSE state."
   (let ((data (opencode-sse--read-state connection :data)))
     (opencode-sse--clear-event connection)
     (when data
-      ;; We don't use session.diff events and they can have enormous payloads, so skip parsing them altogether
-      (unless (string-prefix-p "{\"type\":\"session.diff\"," data)
-        (let* ((payload (opencode-sse--decode-data data))
-               (event (alist-get 'type payload nil nil #'string=)))
-          (unless event
-            (error "OpenCode SSE payload missing type field"))
-          (opencode-sse--dispatch event payload))))))
+      (let ((event (opencode-sse--extract-event-type data)))
+        (unless event
+          (error "OpenCode SSE payload missing type field"))
+        ;; Only JSON-parse events that have registered handlers
+        (when (alist-get event opencode-sse--handlers nil nil #'string=)
+          (let ((payload (opencode-sse--decode-data data)))
+            (opencode-sse--dispatch event payload)))))))
 
 (defun opencode-sse--process-line (connection line)
   "Process LINE in SSE parser CONNECTION state."
