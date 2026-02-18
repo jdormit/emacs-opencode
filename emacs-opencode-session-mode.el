@@ -2137,6 +2137,29 @@ Returns a list of answer strings."
           (when (member (alist-get 'type part) '("text" "tool"))
             (opencode-session--update-message-part part delta)))))))
 
+(defun opencode-session--handle-message-part-delta (_event data)
+  "Handle the message.part.delta SSE DATA."
+  (let* ((properties (alist-get 'properties data))
+         (session-id (alist-get 'sessionID properties))
+         (message-id (alist-get 'messageID properties))
+         (part-id (alist-get 'partID properties))
+         (field (alist-get 'field properties))
+         (delta (alist-get 'delta properties)))
+    (when (and (string= field "text")
+               (stringp delta))
+      (when-let ((buffer (opencode-session--buffer-for-session session-id)))
+        (when (buffer-live-p buffer)
+          (with-current-buffer buffer
+            (when-let ((message (opencode-session--find-message message-id)))
+              (when-let* ((entry (assoc part-id (opencode-message-parts message)))
+                          (part (cdr entry))
+                          ((opencode-message-part-p part)))
+                (setf (opencode-message-part-text part)
+                      (concat (or (opencode-message-part-text part) "") delta))
+                (setf (opencode-message-text message)
+                      (opencode-session--message-text message))
+                (opencode-session--render-message message)))))))))
+
 (defun opencode-session--connection-directories ()
   "Return directories for active OpenCode connections."
   (let (directories)
@@ -2292,6 +2315,9 @@ Call ON-HISTORY-LOADED with BUFFER after the request completes."
 
 (opencode-sse-define-handler message-part-updated "message.part.updated" (_event data)
   (opencode-session--handle-message-part-updated _event data))
+
+(opencode-sse-define-handler message-part-delta "message.part.delta" (_event data)
+  (opencode-session--handle-message-part-delta _event data))
 
 (opencode-sse-define-handler file-edited "file.edited" (_event data)
   (opencode-session--handle-file-updated _event data))
