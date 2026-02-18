@@ -1,8 +1,9 @@
 #+TITLE: Emacs OpenCode TODO
 
-* TODO Add support for managing LLM providers/connections
-* TODO completion-at-point in session buffer input
-- slach commands
+* DONE Add support for managing LLM providers/connections
+CLOSED: [2026-02-18 Wed 17:37]
+* IN PROGRESS completion-at-point in session buffer input
+- slash commands
 - @agent, once @-mentioning agents is supported
 - file paths, once @file is supported
  - completion providers should be pluggable so new triggers (@agent, @file, !shell) can be added
@@ -21,12 +22,8 @@ E.g. "OpenCode wants to rg foobar .*" or "OpenCode wants to foo/bar/baz.txt". Wh
 
 * TODO Support showing reasoning blocks
 * IN PROGRESS Address poor performance of SSE buffer/event dispatch
-- Batch message renders (idle timer) to reduce repeated `message.part.updated` redraws.
-- Throttle tool part updates; render on status change or completion.
-- Avoid full re-render per part; add incremental text updates where possible.
-  - update: tried this, it didn't seem to improve performance at all and introduced more complexity around newline handling
-- Throttle header/spinner updates during streaming bursts.
-- Queue SSE handlers to drain in-order with fewer timers.
+- already implemented: we now only JSON-parse events with registered handlers
+- there is probably still more room to improve here
 * TODO Add newline before "block level" message parts if they are the first part of the message and there isn't a blank line above
 * TODO Font lock in session buffers
 Should syntax highlight markdown and display diffs from the patch tool with diff syntax highlighting.
