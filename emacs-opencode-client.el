@@ -157,20 +157,22 @@ AUTH-INFO is an alist representing the auth payload."
    :success success
    :error error))
 
-(cl-defmethod opencode-client-session-prompt-async ((conn opencode-connection) session-id parts &key success error agent model)
+(cl-defmethod opencode-client-session-prompt-async
+  ((conn opencode-connection) session-id parts &key success error agent model variant)
   "Send PARTS to SESSION-ID asynchronously.
 
-PARTS is a list of message part objects for the request body.  AGENT is
-included when provided.  MODEL is a cons (PROVIDER-ID . MODEL-ID) included
-when provided."
+PARTS is a list of message part objects for the request body. AGENT and
+VARIANT are included when provided. MODEL is a cons (PROVIDER-ID . MODEL-ID)
+included when provided."
   (opencode-request
-   conn
-   'POST
-   (format "/session/%s/prompt_async" session-id)
-   :json (append (when agent `((agent . ,agent)))
-                 (when model `((model . ((providerID . ,(car model))
-                                         (modelID . ,(cdr model))))))
-                 `((parts . ,parts)))
+    conn
+    'POST
+    (format "/session/%s/prompt_async" session-id)
+    :json (append (when agent `((agent . ,agent)))
+                  (when variant `((variant . ,variant)))
+                  (when model `((model . ((providerID . ,(car model))
+                                          (modelID . ,(cdr model))))))
+                  `((parts . ,parts)))
    :parser (lambda () nil)
    :success success
    :error error))
@@ -238,14 +240,18 @@ ANSWERS is a list of string lists aligned to the requested questions."
    :error error))
 
 (cl-defmethod opencode-client-session-command
-  ((conn opencode-connection) session-id command arguments &key success error agent model)
+  ((conn opencode-connection) session-id command arguments
+   &key success error agent model variant)
   "Send COMMAND with ARGUMENTS to SESSION-ID.
 
-MODEL is a \"provider/model\" string included when provided."
+MODEL is a \"provider/model\" string included when provided. VARIANT is sent
+when provided."
   (let ((payload `((command . ,command)
                    (arguments . ,(or arguments "")))))
     (when agent
       (setq payload (append payload `((agent . ,agent)))))
+    (when variant
+      (setq payload (append payload `((variant . ,variant)))))
     (when model
       (setq payload (append payload `((model . ,model)))))
     (opencode-request

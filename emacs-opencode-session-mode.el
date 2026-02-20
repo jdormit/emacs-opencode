@@ -28,6 +28,14 @@
   :type 'string
   :group 'emacs-opencode)
 
+(defcustom opencode-session-default-variant nil
+  "Default model variant name for new OpenCode sessions.
+
+When nil, do not auto-select a model variant."
+  :type '(choice (const :tag "None" nil)
+                 (string :tag "Variant name"))
+  :group 'emacs-opencode)
+
 (defcustom opencode-session-input-prompt "❯ "
   "Prompt string shown before the session input area."
   :type 'string
@@ -144,6 +152,12 @@ Each function receives SESSION and INPUT as arguments.")
 (defvar-local opencode-session--model-id nil
   "Selected model ID for the current session buffer.")
 
+(defvar-local opencode-session--variant nil
+  "Selected model variant for the current session buffer.")
+
+(defvar-local opencode-session--variant-index nil
+  "Index of the selected variant in the available variants list.")
+
 (defvar opencode-session--recent-models nil
   "Global list of recently selected (PROVIDER-ID . MODEL-ID) pairs.
 Most recently selected first.")
@@ -160,6 +174,9 @@ Most recently selected first.")
     (define-key map (kbd "C-c C-r") #'opencode-session-refresh-agents)
     (define-key map (kbd "C-c C-k") #'opencode-session-interrupt)
     (define-key map (kbd "C-c C-l") #'opencode-session-select-model)
+    (define-key map (kbd "C-c C-v") #'opencode-session-select-variant)
+    (define-key map (kbd "C-c C-]") #'opencode-session-next-variant)
+    (define-key map (kbd "C-c C-[") #'opencode-session-previous-variant)
     (define-key map (kbd "C-c C-o") #'opencode-command)
     (define-key map (kbd "S-TAB") #'opencode-session-previous-agent)
     (define-key map (kbd "<backtab>") #'opencode-session-previous-agent)
@@ -187,6 +204,8 @@ Most recently selected first.")
   (setq-local opencode-session--agent-index nil)
   (setq-local opencode-session--provider-id nil)
   (setq-local opencode-session--model-id nil)
+  (setq-local opencode-session--variant nil)
+  (setq-local opencode-session--variant-index nil)
   (opencode-session--ensure-markers)
   (add-hook 'completion-at-point-functions
             #'opencode-session--completion-at-point
@@ -259,7 +278,8 @@ request completes."
   (let ((connection opencode-session--connection)
         (session-id (opencode-session-id opencode-session--session))
         (agent opencode-session--agent)
-        (model (opencode-session--selected-model-string)))
+        (model (opencode-session--selected-model-string))
+        (variant opencode-session--variant))
     (opencode-client-commands
      connection
      :success (lambda (&rest args)
@@ -279,6 +299,7 @@ request completes."
                      command
                      arguments
                      :agent agent
+                     :variant variant
                      :model model
                      :success (lambda (&rest _args)
                                 (message "OpenCode command queued"))
@@ -382,23 +403,35 @@ RIGHT is aligned to the far edge when provided."
   (when opencode-session--connection
     (opencode-session--ensure-providers opencode-session--connection))
   (let* ((model (opencode-session--header-model-string))
+         (variant (opencode-session--header-variant-string))
          (context (opencode-session--header-context-string))
          (cost (and
                 (not (string-empty-p (string-trim (or context ""))))
                 (opencode-session--header-cost-string))))
-    (when (or model context cost)
+    (when (or model variant context cost)
       (propertize
        (string-join
-        (delq nil (list model context (when cost (format "(%s)" cost))))
+        (delq nil (list model variant context (when cost (format "(%s)" cost))))
         " ")
        'face 'opencode-session-status-face))))
 
 (defun opencode-session--header-model-string ()
   "Return the active provider/model string for the session header."
-  (when-let* ((model (or (and opencode-session--provider-id opencode-session--model-id
-                              (cons opencode-session--provider-id opencode-session--model-id))
-                         (opencode-session--last-message-model))))
+  (when-let* ((model (opencode-session--active-model)))
     (format "%s/%s" (car model) (cdr model))))
+
+(defun opencode-session--header-variant-string ()
+  "Return the active variant string for the session header."
+  (when (and (opencode-session--header-model-string)
+             (stringp opencode-session--variant)
+             (not (string-empty-p opencode-session--variant)))
+    (format "[%s]" opencode-session--variant)))
+
+(defun opencode-session--active-model ()
+  "Return active (PROVIDER-ID . MODEL-ID) for this buffer."
+  (or (and opencode-session--provider-id opencode-session--model-id
+           (cons opencode-session--provider-id opencode-session--model-id))
+      (opencode-session--last-message-model)))
 
 (defun opencode-session--last-message-model ()
   "Return the latest (PROVIDER-ID . MODEL-ID) from session messages."
@@ -1074,12 +1107,14 @@ Restores INPUT when the request fails."
   (let ((session-id (opencode-session-id session))
         (payload `(("type" . "text") ("text" . ,input)))
         (agent opencode-session--agent)
-        (model (opencode-session--selected-model)))
+        (model (opencode-session--selected-model))
+        (variant opencode-session--variant))
     (opencode-client-session-prompt-async
      connection
      session-id
      (list payload)
      :agent agent
+     :variant variant
      :model model
      :success (lambda (&rest _args)
                 (message "OpenCode: message queued"))
@@ -1112,6 +1147,7 @@ Falls back to a normal prompt when INPUT does not match an available command."
                              command
                              arguments
                              :agent opencode-session--agent
+                             :variant opencode-session--variant
                              :model (opencode-session--selected-model-string)
                              :success (lambda (&rest _args)
                                         (message "OpenCode command queued"))
@@ -1166,7 +1202,8 @@ Falls back to a normal prompt when INPUT does not match an available command."
              (not (string-empty-p (opencode-message-provider-id message)))
              (not (string-empty-p (opencode-message-model-id message))))
     (setq-local opencode-session--provider-id (opencode-message-provider-id message))
-    (setq-local opencode-session--model-id (opencode-message-model-id message))))
+    (setq-local opencode-session--model-id (opencode-message-model-id message))
+    (opencode-session--sync-variant-selection)))
 
 (defun opencode-session--update-message (message info)
   "Update MESSAGE fields from INFO."
@@ -1508,6 +1545,80 @@ COMMAND is nil when INPUT is not a slash command."
       (cl-remove-if-not #'consp models))
      (t nil))))
 
+(defun opencode-session--provider-model-info (provider-id model-id &optional connection)
+  "Return model metadata for PROVIDER-ID and MODEL-ID from CONNECTION."
+  (let* ((conn (or connection opencode-session--connection))
+         (catalog (opencode-session--provider-catalog conn))
+         (providers (or (opencode-session--normalize-items (and catalog (alist-get 'all catalog)))
+                        (opencode-session--normalize-items (and conn (opencode-connection-providers conn)))))
+         (provider (and (stringp provider-id)
+                        (cl-find provider-id providers
+                                 :key (lambda (item) (alist-get 'id item))
+                                 :test #'string=))))
+    (when provider
+      (cdr (cl-assoc model-id (opencode-session--provider-model-items provider)
+                     :test #'string=)))))
+
+(defun opencode-session--variant-keys (variants)
+  "Return variant names from VARIANTS metadata."
+  (let (keys)
+    (cond
+     ((hash-table-p variants)
+      (maphash
+       (lambda (key value)
+         (let ((name (cond
+                      ((stringp key) key)
+                      ((symbolp key) (symbol-name key))
+                      (t nil))))
+           (unless (or (null name)
+                       (and (listp value)
+                            (eq (alist-get 'disabled value) t)))
+             (push name keys))))
+       variants))
+     ((listp variants)
+      (dolist (entry variants)
+        (when (consp entry)
+          (let* ((key (car entry))
+                 (value (cdr entry))
+                 (name (cond
+                        ((stringp key) key)
+                        ((symbolp key) (symbol-name key))
+                        (t nil))))
+            (unless (or (null name)
+                        (and (listp value)
+                             (eq (alist-get 'disabled value) t)))
+              (push name keys)))))))
+    (sort (delete-dups keys) #'string-lessp)))
+
+(defun opencode-session--available-variants ()
+  "Return available variant names for the active model."
+  (when-let* ((model (opencode-session--active-model))
+              (model-info (opencode-session--provider-model-info
+                           (car model)
+                           (cdr model)
+                           opencode-session--connection)))
+    (opencode-session--variant-keys (alist-get 'variants model-info))))
+
+(defun opencode-session--sync-variant-selection ()
+  "Sync selected variant with available variants for the active model."
+  (let* ((variants (opencode-session--available-variants))
+         (current opencode-session--variant)
+         (current-index (and current
+                             variants
+                             (cl-position current variants :test #'string=))))
+    (cond
+     (current-index
+      (setq-local opencode-session--variant-index current-index))
+     ((and (stringp opencode-session-default-variant)
+           variants
+           (member opencode-session-default-variant variants))
+      (setq-local opencode-session--variant opencode-session-default-variant)
+      (setq-local opencode-session--variant-index
+                  (cl-position opencode-session-default-variant variants :test #'string=)))
+     (t
+      (setq-local opencode-session--variant nil)
+      (setq-local opencode-session--variant-index nil)))))
+
 (defun opencode-session--provider-model-candidate-display (provider-id model-id connected-p)
   "Return completion display text for PROVIDER-ID and MODEL-ID.
 
@@ -1627,10 +1738,11 @@ The return value is a cons of (CHOICES . LOOKUP)."
   "Re-render headers for buffers using CONNECTION."
   (maphash
    (lambda (_session-id buffer)
-     (when (buffer-live-p buffer)
-       (with-current-buffer buffer
-         (when (eq opencode-session--connection connection)
-           (opencode-session--render-header)))))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when (eq opencode-session--connection connection)
+            (opencode-session--sync-variant-selection)
+            (opencode-session--render-header)))))
    opencode-session--buffers))
 
 (defun opencode-session--refresh-agents (connection)
@@ -1698,6 +1810,79 @@ The return value is a cons of (CHOICES . LOOKUP)."
     (error "OpenCode session is not connected"))
   (opencode-session--refresh-agents opencode-session--connection))
 
+(defun opencode-session--set-variant (variant index)
+  "Set model VARIANT at INDEX for the current session buffer."
+  (setq-local opencode-session--variant variant)
+  (setq-local opencode-session--variant-index (and variant index))
+  (opencode-session--render-header)
+  (message "OpenCode variant: %s" (or variant "none")))
+
+(defconst opencode-session--no-variant-label "none"
+  "Completion label representing no active model variant.")
+
+(defun opencode-session-clear-variant ()
+  "Clear the active model variant for the current session buffer."
+  (interactive)
+  (unless (derived-mode-p 'opencode-session-mode)
+    (error "Not in an OpenCode session buffer"))
+  (opencode-session--set-variant nil nil))
+
+(defun opencode-session-select-variant (variant)
+  "Select model VARIANT for the current session buffer."
+  (interactive
+   (progn
+     (unless opencode-session--connection
+       (error "OpenCode session is not connected"))
+     (opencode-session--ensure-providers opencode-session--connection)
+     (unless (opencode-session--active-model)
+       (error "Select a model first"))
+     (let* ((variants (or (opencode-session--available-variants) nil))
+            (choices (cons opencode-session--no-variant-label variants))
+            (initial (or opencode-session--variant
+                         opencode-session-default-variant
+                         opencode-session--no-variant-label)))
+       (list (completing-read "OpenCode variant: " choices nil t nil nil initial)))))
+  (if (or (null variant)
+          (string= variant opencode-session--no-variant-label))
+      (opencode-session-clear-variant)
+    (let* ((variants (opencode-session--available-variants))
+           (index (and variants
+                       (cl-position variant variants :test #'string=))))
+      (if (and variants index)
+          (opencode-session--set-variant variant index)
+        (message "OpenCode: unknown variant %s" variant)))))
+
+(defun opencode-session--cycle-variant (step)
+  "Cycle the current model variant by STEP positions."
+  (unless opencode-session--connection
+    (error "OpenCode session is not connected"))
+  (opencode-session--ensure-providers opencode-session--connection)
+  (unless (opencode-session--active-model)
+    (error "Select a model first"))
+  (let* ((variants (or (opencode-session--available-variants) nil))
+         (cycle-values (cons nil variants))
+         (count (length cycle-values))
+         (current (or (and opencode-session--variant
+                           (let ((index (cl-position opencode-session--variant variants
+                                                     :test #'string=)))
+                             (and index (1+ index))))
+                      0))
+         (next (mod (+ current step) count))
+         (next-variant (nth next cycle-values)))
+    (if next-variant
+        (opencode-session--set-variant next-variant (1- next))
+      (opencode-session-clear-variant))))
+
+(defun opencode-session-next-variant ()
+  "Select the next variant (including none) for the current model."
+  (interactive)
+  (opencode-session--cycle-variant 1))
+
+(defun opencode-session-previous-variant ()
+  "Select the previous variant (including none) for the current model."
+  (interactive)
+  (opencode-session--cycle-variant -1))
+
 (defun opencode-session--apply-model-selection (provider-id model-id)
   "Apply PROVIDER-ID and MODEL-ID as the active model.
 Update recent models list, buffer state, and header."
@@ -1707,6 +1892,7 @@ Update recent models list, buffer state, and header."
                                :test #'equal))))
   (setq-local opencode-session--provider-id provider-id)
   (setq-local opencode-session--model-id model-id)
+  (opencode-session--sync-variant-selection)
   (opencode-session--render-header)
   (message "OpenCode model: %s/%s" provider-id model-id))
 
