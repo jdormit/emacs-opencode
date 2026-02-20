@@ -170,9 +170,12 @@ Returns the type string, or nil if it cannot be extracted."
    ((string-prefix-p ":" line)
     nil)
    (t
-    (let* ((parts (split-string line ":" t " +"))
-           (field (car parts))
-           (value (string-join (cdr parts) ":")))
+    (let* ((colon-pos (string-match ":" line))
+           (field (substring line 0 colon-pos))
+           (value (substring line (1+ colon-pos))))
+      ;; Per SSE spec, strip at most one leading space from the value.
+      (when (string-prefix-p " " value)
+        (setq value (substring value 1)))
       (pcase field
         ("data" (opencode-sse--append-data connection value))
         (_ nil))))))
