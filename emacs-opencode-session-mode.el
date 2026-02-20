@@ -33,6 +33,11 @@
   :type 'string
   :group 'emacs-opencode)
 
+(defcustom opencode-session-show-reasoning nil
+  "When non-nil, display reasoning/thinking blocks in the session buffer."
+  :type 'boolean
+  :group 'emacs-opencode)
+
 (defcustom opencode-session-completion-providers
   '(opencode-session--complete-command)
   "Completion providers for `opencode-session-mode` input.
@@ -82,6 +87,11 @@ one returns a completion result."
 (defface opencode-session-agent-face
   '((t :inherit (mode-line-emphasis success) :weight bold))
   "Face used for the active agent label."
+  :group 'emacs-opencode)
+
+(defface opencode-session-reasoning-face
+  '((t :inherit shadow :slant italic))
+  "Face used for reasoning/thinking blocks."
   :group 'emacs-opencode)
 
 (defface opencode-session-tool-face
@@ -675,7 +685,7 @@ Fallback to a plain busy label when frames are unavailable."
                                                        "bash")))))
         (when rendered
           (cond
-           ((or (string= part-type "text") block-tool)
+           ((or (string= part-type "text") (string= part-type "reasoning") block-tool)
             (when (and (not (string-empty-p output))
                        (not (string-match-p "\\n\\n+\\'" output)))
               (setq output (concat output "\n")))
@@ -700,6 +710,12 @@ Fallback to a plain busy label when frames are unavailable."
             (face (opencode-session--role-face message)))
         (unless (or synthetic ignored (string-empty-p (string-trim text)))
           (propertize text 'face face))))
+     ((string= part-type "reasoning")
+      (when opencode-session-show-reasoning
+        (let ((text (or (opencode-message-part-text part) "")))
+          (unless (string-empty-p (string-trim text))
+            (propertize (concat "Thinking:\n" text)
+                        'face 'opencode-session-reasoning-face)))))
      ((string= part-type "tool")
       (opencode-session--tool-part-line part))
      (t nil))))
@@ -2134,7 +2150,7 @@ Returns a list of answer strings."
     (when-let ((buffer (opencode-session--buffer-for-session session-id)))
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
-          (when (member (alist-get 'type part) '("text" "tool"))
+          (when (member (alist-get 'type part) '("text" "tool" "reasoning"))
             (opencode-session--update-message-part part delta)))))))
 
 (defun opencode-session--handle-message-part-delta (_event data)
