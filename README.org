@@ -3,6 +3,10 @@
 An Emacs client for [[https://opencode.ai][OpenCode]]. Start servers, open sessions, chat, stream
 responses, and manage agents — all from native Emacs buffers.
 
+*Note:* This project is a work-in-progress. It is ready for daily use but does
+not yet have full feature parity with the OpenCode TUI. See [[file:TODO.org][TODO.org]] for a
+rough roadmap.
+
 * Quickstart
 
 Requires Emacs 29+ and the =opencode= CLI on your =$PATH= ([[https://opencode.ai/docs/#install][install docs]]).
