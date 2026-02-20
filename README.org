@@ -1,0 +1,163 @@
+#+TITLE: emacs-opencode
+
+An Emacs client for [[https://opencode.ai][OpenCode]]. Start servers, open sessions, chat, stream
+responses, and manage agents — all from native Emacs buffers.
+
+* Quickstart
+
+Requires Emacs 29+ and the =opencode= CLI on your =$PATH= ([[https://opencode.ai/docs/#install][install docs]]).
+
+Clone the repository and add it to your =load-path=:
+
+#+begin_src emacs-lisp
+(add-to-list 'load-path "/path/to/emacs-opencode")
+(require 'emacs-opencode)
+#+end_src
+
+Or install with [[https://github.com/radian-software/straight.el][straight.el]]:
+
+#+begin_src emacs-lisp
+(use-package emacs-opencode
+  :straight (:type git :host github :repo "jdormit/emacs-opencode"))
+#+end_src
+
+Run =M-x opencode= in a project directory to create a new session. Type a
+prompt and press =C-c C-c= to send it.
+
+For a one-shot prompt without opening a session buffer first, use
+=M-x opencode-ask=.
+
+* Commands and Keybindings
+
+** Global Commands
+
+| Command                            | Description                                  |
+|------------------------------------+----------------------------------------------|
+| =opencode=                         | New session in a project directory            |
+| =opencode-ask=                     | New session with a prompt                     |
+| =opencode-ask-contextual=          | New session with prompt + buffer context      |
+| =opencode-open-session=            | Open an existing session                      |
+| =opencode-send-to-session=         | Send a prompt to an existing session          |
+| =opencode-send-context-to-session= | Send prompt + context to an existing session  |
+| =opencode-shutdown=                | Stop server for a directory                   |
+| =opencode-shutdown-all=            | Stop all servers                              |
+
+All commands auto-detect the current project root. Use a prefix argument
+(=C-u=) to choose a directory manually.
+
+** Session Buffer Keybindings
+
+| Key         | Command                                |
+|-------------+----------------------------------------|
+| =C-c C-c=   | Send input                             |
+| =C-c C-k=   | Interrupt active prompt                |
+| =C-c C-a=   | Select agent                           |
+| =C-c C-n=   | Next agent                             |
+| =C-c C-p=   | Previous agent                         |
+| =TAB=        | Next agent (also works with evil-mode) |
+| =S-TAB=      | Previous agent                         |
+| =C-c C-l=   | Select model/provider                  |
+| =C-c C-v=   | Select model variant                   |
+| =C-c C-]=   | Next variant                           |
+| =C-c C-[=   | Previous variant                       |
+| =C-c C-o=   | Run a slash command                    |
+| =C-c C-r=   | Refresh agents                         |
+| =C-<tab>=   | Completion-at-point (slash commands)   |
+
+* Customization
+
+All options are in the =emacs-opencode= customize group.
+
+| Variable                                 | Default           | Description                              |
+|------------------------------------------+-------------------+------------------------------------------|
+| =opencode-server-command=                | ="opencode"=      | Executable name or path                  |
+| =opencode-server-host=                   | ="127.0.0.1"=     | Server bind address                      |
+| =opencode-server-port=                   | =4096=            | Server port (auto-picks a free port if busy) |
+| =opencode-server-environment=            | =nil=             | Alist of env vars for server processes   |
+| =opencode-ready-timeout=                 | =5=               | Seconds to wait for server startup       |
+| =opencode-session-default-agent=         | ="plan"=          | Default agent for new sessions           |
+| =opencode-session-default-variant=       | =nil=             | Default model variant                    |
+| =opencode-session-input-prompt=          | ="❯ "=            | Prompt string in session buffers         |
+| =opencode-session-show-reasoning=        | =nil=             | Display reasoning/thinking blocks        |
+| =opencode-session-completion-providers=  | =(list ...)=      | Completion-at-point providers for input  |
+| =opencode-session-spinner-frames=        | =(list ...)=      | Spinner animation frames                 |
+| =opencode-session-spinner-interval=      | =0.1=             | Seconds between spinner frames           |
+
+Faces (=opencode-session-user-face=, =opencode-session-assistant-face=,
+=opencode-session-tool-face=, etc.) can be customized via =M-x customize-group
+RET emacs-opencode=.
+
+* Deep Emacs Integration
+
+With a small amount of configuration, the OpenCode agent can interact with
+your live Emacs session — reading buffers, evaluating elisp, running
+compilation commands, and more. This requires three pieces:
+
+1. An Emacs MCP server that exposes Emacs tools to OpenCode.
+2. An Emacs-specific OpenCode config file that loads custom instructions.
+3. Environment variables that wire everything together.
+
+** 1. Emacs MCP Server
+
+The [[https://github.com/rhblind/emacs-mcp-server][emacs-mcp-server]] package starts a local MCP server (over a Unix socket)
+that gives any connected agent access to Emacs primitives: evaluate elisp,
+read/list buffers, get diagnostics, etc.
+
+#+begin_src emacs-lisp
+(use-package mcp-server
+  :straight (:type git :host github :repo "rhblind/emacs-mcp-server"
+                   :files ("*.el" "tools/*.el" "mcp-wrapper.py" "mcp-wrapper.sh"))
+  :config
+  (add-hook 'emacs-startup-hook #'mcp-server-start-unix)
+  :custom
+  (mcp-server-security-prompt-for-permissions t))
+#+end_src
+
+** 2. Emacs-specific OpenCode Config
+
+Create a dedicated config file (e.g. =~/.config/opencode/opencode.emacs.jsonc=)
+that loads instructions telling the agent it's running inside Emacs:
+
+#+begin_src jsonc
+// ~/.config/opencode/opencode.emacs.jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": [
+    "~/.config/opencode/instructions/emacs.md"
+  ]
+}
+#+end_src
+
+And the instructions file:
+
+#+begin_src markdown
+<!-- ~/.config/opencode/instructions/emacs.md -->
+# Emacs Session Instructions
+
+You are running inside Emacs. You have access to the Emacs environment via
+the provided Emacs tools. Use them whenever it would be best for the task at
+hand, e.g. running user-facing shell commands (tests, compilation) via
+`compile`.
+#+end_src
+
+** 3. Wiring It Together
+
+Use =opencode-server-environment= to point the server process at the
+Emacs-specific config and pass any secrets that MCP servers or tools need:
+
+#+begin_src emacs-lisp
+(use-package emacs-opencode
+  :straight (:type git :host github :repo "jdormit/emacs-opencode")
+  :commands (opencode opencode-open-session opencode-ask opencode-ask-contextual)
+  :custom
+  (opencode-server-environment
+   `(("OPENCODE_CONFIG" . ,(expand-file-name "~/.config/opencode/opencode.emacs.jsonc"))
+     ;; Pass any additional env vars your MCP servers need:
+     ("TAVILY_API_KEY" . "...")))
+  :bind-keymap ("C-c a" . my-ai-map))
+#+end_src
+
+With this setup, every OpenCode server started from Emacs will load the
+Emacs-specific config and instructions. The agent will know it's running
+inside Emacs and can use the MCP tools exposed by =emacs-mcp-server= to
+interact with your session.
