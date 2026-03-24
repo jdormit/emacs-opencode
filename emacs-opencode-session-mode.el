@@ -29,6 +29,9 @@
 (defvar-local opencode-session--status-poll-timer nil
   "Timer for polling session status during HTTP-initiated prompts.")
 
+(defvar-local opencode-session--task-poll-timers nil
+  "Alist of active sub-agent poll timers: ((toolCallId . timer) ...).")
+
 (defcustom opencode-session-input-prompt "❯ "
   "Prompt string shown before the session input area."
   :type 'string
@@ -475,6 +478,7 @@ BUFFER is the session buffer.  CONNECTION is the server connection."
                 (when (buffer-live-p buffer)
                   (with-current-buffer buffer
                     (opencode-session--stop-question-polling connection)
+                    (opencode-session--stop-all-task-polls)
                     (opencode-acp--finalize-current-message)
                     (opencode-session--update-status session-id "idle")
                     (opencode-session--refresh-session-metadata connection session-id)
@@ -483,6 +487,7 @@ BUFFER is the session buffer.  CONNECTION is the server connection."
               (when (buffer-live-p buffer)
                 (with-current-buffer buffer
                   (opencode-session--stop-question-polling connection)
+                  (opencode-session--stop-all-task-polls)
                   (opencode-session--stop-command-reconcile)
                   (opencode-acp--finalize-current-message)
                   (opencode-session--update-status session-id "idle")
@@ -1078,12 +1083,152 @@ When the session becomes idle, finalize the turn in BUFFER."
                     (with-current-buffer buffer
                       (opencode-session--stop-status-poll)
                       (opencode-session--stop-question-polling connection)
+                      (opencode-session--stop-all-task-polls)
                       (opencode-acp--finalize-current-message)
                       (opencode-session--update-status session-id "idle")
                       (opencode-session--refresh-session-metadata
                        connection session-id)
                       (opencode-session--stop-command-reconcile))))))
    :error (lambda (&rest _args) nil))))
+
+;;; Sub-agent tool call polling
+;;
+;; When a task tool call starts, we poll to discover the sub-agent
+;; session ID (Layer 1), then poll the sub-agent's messages for tool
+;; calls (Layer 2).  This feeds into the existing subagent tracking
+;; infrastructure which renders tool calls under the parent task part.
+
+(defun opencode-session--start-task-poll (connection parent-session-id tool-call-id)
+  "Start polling to discover and track a sub-agent for TOOL-CALL-ID.
+CONNECTION is the server connection.  PARENT-SESSION-ID is the parent
+session.  Begins with Layer 1 (discover sub-agent session ID)."
+  ;; Don't double-poll for the same tool call
+  (unless (assoc tool-call-id opencode-session--task-poll-timers)
+    (let* ((buffer (current-buffer))
+           (timer (run-at-time
+                   1 1
+                   #'opencode-session--poll-task-discovery
+                   connection parent-session-id tool-call-id buffer)))
+      (push (cons tool-call-id timer) opencode-session--task-poll-timers))))
+
+(defun opencode-session--stop-task-poll (tool-call-id)
+  "Stop the sub-agent poll for TOOL-CALL-ID."
+  (when-let ((entry (assoc tool-call-id opencode-session--task-poll-timers)))
+    (cancel-timer (cdr entry))
+    (setq opencode-session--task-poll-timers
+          (assoc-delete-all tool-call-id opencode-session--task-poll-timers))))
+
+(defun opencode-session--stop-all-task-polls ()
+  "Stop all active sub-agent poll timers."
+  (dolist (entry opencode-session--task-poll-timers)
+    (cancel-timer (cdr entry)))
+  (setq opencode-session--task-poll-timers nil))
+
+(defun opencode-session--poll-task-discovery
+    (connection parent-session-id tool-call-id buffer)
+  "Layer 1: Poll parent session messages to find the sub-agent session ID.
+Scans the latest messages in PARENT-SESSION-ID for a task tool part
+with callID matching TOOL-CALL-ID.  When the sub-agent session ID is
+found in the part's metadata, registers the subagent mapping and
+transitions to Layer 2 polling."
+  (if (not (and (buffer-live-p buffer)
+                (opencode-connection-alive-p connection)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (opencode-session--stop-task-poll tool-call-id)))
+    (opencode-client-session-messages
+     connection
+     parent-session-id
+     :limit 2
+     :success
+     (lambda (&rest args)
+       (let* ((data (plist-get args :data))
+              (items (opencode-session--normalize-items data)))
+         (catch 'found
+           (dolist (item items)
+             (let ((parts (opencode-session--normalize-items
+                           (alist-get 'parts item))))
+               (dolist (part parts)
+                 (when (and (string= (alist-get 'type part) "tool")
+                            (string= (alist-get 'tool part) "task")
+                            (equal (alist-get 'callID part) tool-call-id))
+                   (let* ((state (alist-get 'state part))
+                          (metadata (alist-get 'metadata state))
+                          (sub-session-id (alist-get 'sessionId metadata))
+                           ;; Use callID (not id) to match the ACP-created
+                           ;; message part key (which is the toolCallId)
+                           (part-id (alist-get 'callID part)))
+                     (when sub-session-id
+                       (when (buffer-live-p buffer)
+                          (with-current-buffer buffer
+                            ;; Register the subagent mapping
+                            (opencode-session--register-subagent
+                             sub-session-id parent-session-id part-id)
+                            ;; Update the part's state metadata so the
+                            ;; renderer can find the subagent session ID
+                            (when-let ((msg (opencode-session--find-message-by-part part-id)))
+                              (when-let ((pentry (assoc part-id (opencode-message-parts msg))))
+                                (let ((prt (cdr pentry)))
+                                  (when (opencode-message-part-p prt)
+                                    (let ((st (or (opencode-message-part-state prt) '())))
+                                      (setf (alist-get 'metadata st)
+                                            `((sessionId . ,sub-session-id)))
+                                      (setf (opencode-message-part-state prt) st))))))
+                            ;; Stop Layer 1, start Layer 2
+                            (opencode-session--stop-task-poll tool-call-id)
+                           (let ((timer
+                                  (run-at-time
+                                   0 1
+                                   #'opencode-session--poll-subagent-tools
+                                   connection sub-session-id buffer)))
+                             (push (cons tool-call-id timer)
+                                   opencode-session--task-poll-timers))))
+                       (throw 'found t))))))))))
+     :error (lambda (&rest _args) nil))))
+
+(defun opencode-session--poll-subagent-tools
+    (connection subagent-session-id buffer)
+  "Layer 2: Poll sub-agent messages and feed tool parts into tracking.
+Fetches messages from SUBAGENT-SESSION-ID and updates the subagent tool
+tracking data, then re-renders the parent task part in BUFFER."
+  (if (not (and (buffer-live-p buffer)
+                (opencode-connection-alive-p connection)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          ;; Find and stop the timer for this subagent
+          (dolist (entry opencode-session--task-poll-timers)
+            (when (timerp (cdr entry))
+              ;; We can't easily match by subagent-session-id since the
+              ;; key is tool-call-id, so just let the guard above handle it
+              nil))))
+    (opencode-client-session-messages
+     connection
+     subagent-session-id
+     :success
+     (lambda (&rest args)
+       (let* ((data (plist-get args :data))
+              (items (opencode-session--normalize-items data))
+              (updated nil))
+         ;; Scan all messages for tool parts
+         (dolist (item items)
+           (let ((parts (opencode-session--normalize-items
+                         (alist-get 'parts item))))
+             (dolist (part parts)
+               (when (string= (alist-get 'type part) "tool")
+                 (let ((part-id (alist-get 'id part))
+                       (tool (alist-get 'tool part))
+                       (state (alist-get 'state part)))
+                   (opencode-session--update-subagent-tool
+                    subagent-session-id part-id tool state)
+                   (setq updated t))))))
+         ;; Re-render the parent task part if we found any tools
+         (when (and updated (buffer-live-p buffer))
+           (with-current-buffer buffer
+             (when-let ((parent-info
+                         (opencode-session--subagent-parent
+                          subagent-session-id)))
+               (opencode-session--rerender-task-part parent-info))))))
+     :error (lambda (&rest _args) nil))))
 
 ;;; History loading
 

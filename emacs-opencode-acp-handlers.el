@@ -24,6 +24,8 @@
 (declare-function opencode-session--message-part-from-info "emacs-opencode-session-mode")
 (declare-function opencode-session--maybe-revert-buffer "emacs-opencode-session-handlers")
 (declare-function opencode-session--permission-prompt-label "emacs-opencode-session-handlers")
+(declare-function opencode-session--start-task-poll "emacs-opencode-session-mode")
+(declare-function opencode-session--stop-task-poll "emacs-opencode-session-mode")
 
 ;;; Internal state for streaming message assembly
 
@@ -243,7 +245,13 @@ These arrive during session replay via `loadSession'."
       (setq opencode-acp--current-text-part-id nil)
       (setf (opencode-message-text message)
             (opencode-session--message-text message))
-      (opencode-session--render-message message))))
+      (opencode-session--render-message message)
+      ;; For task tool calls, start polling to discover the sub-agent
+      ;; session ID and track its tool calls.
+      (when (and (stringp tool-name) (string= tool-name "task")
+                 opencode-session--connection)
+        (opencode-session--start-task-poll
+         opencode-session--connection session-id call-id)))))
 
 ;;; tool_call_update — tool call status/output change
 
@@ -304,7 +312,20 @@ These arrive during session replay via `loadSession'."
       ;; Re-render
       (setf (opencode-message-text message)
             (opencode-session--message-text message))
-      (opencode-session--render-message message))))
+      (opencode-session--render-message message)
+      ;; For completed task tool calls, register subagent if not yet done
+      ;; and stop the task poll.
+      (when (and (string= (or status "") "completed")
+                 (string= (or (opencode-message-part-tool part) "") "task"))
+        (when-let ((metadata (alist-get 'metadata
+                                        (alist-get 'rawOutput update))))
+          (when-let ((sub-session-id (alist-get 'sessionId metadata)))
+            (unless (opencode-session--subagent-parent sub-session-id)
+              (opencode-session--register-subagent
+               sub-session-id session-id call-id))))
+        ;; Do one final poll then stop
+        (when opencode-session--connection
+          (opencode-session--stop-task-poll call-id))))))
 
 ;;; usage_update — context window and cost info
 
