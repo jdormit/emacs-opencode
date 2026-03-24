@@ -1,9 +1,14 @@
 #+TITLE: Emacs OpenCode TODO
 
+* TODO sometimes acp server http stuff is unresponsive?
+* TODO follow up on agent messages streaming in above last user message
+* TODO fix agent (plan/build) selection
 * TODO fix (remove) acp timeout for prompts
 * TODO fix reconnect logic now that we've switched to acp
-* TODO fix session restore
-* TODO fix issue where you can't scroll around when a response is streaming in
+* DONE fix session restore
+CLOSED: [2026-03-24 Tue 00:00]
+* DONE fix issue where you can't scroll around when a response is streaming in
+CLOSED: [2026-03-24 Tue 00:09]
 * IN PROGRESS completion-at-point in session buffer input
 - slash commands
 - @agent
