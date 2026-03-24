@@ -191,21 +191,38 @@ Call ON-SELECTED with the selected session and session info data."
 (defun opencode--ensure-session-buffer (session connection &optional on-ready)
   "Open or reuse a buffer for SESSION using CONNECTION.
 
-When ON-READY is non-nil, call it with the session buffer once ready."
+Sends a session/resume ACP request to register the session with the
+server before opening the buffer.  When ON-READY is non-nil, call it
+with the session buffer once ready."
   (let* ((session-id (opencode-session-id session))
          (existing-buffer (and session-id
                                (opencode-session--buffer-for-session session-id))))
-    (if (and existing-buffer (buffer-live-p existing-buffer))
-        (progn
-          (with-current-buffer existing-buffer
-            (setq-local opencode-session--connection connection)
-            (when-let ((info (opencode-session-info session)))
-              (opencode-session--update-session info))
-            (opencode-session--ensure-agents connection))
-          (pop-to-buffer existing-buffer)
-          (when on-ready
-            (funcall on-ready existing-buffer)))
-      (opencode-session-open session connection on-ready))))
+    ;; Resume session on the ACP server so it's registered for prompts.
+    (opencode-acp-request
+     (opencode-connection-process connection)
+     "session/resume"
+     (let ((params (make-hash-table :test 'equal)))
+       (puthash "sessionId" session-id params)
+       (puthash "cwd" (directory-file-name
+                       (opencode-connection-directory connection))
+                params)
+       (puthash "mcpServers" [] params)
+       params)
+     :success (lambda (_result)
+                (if (and existing-buffer (buffer-live-p existing-buffer))
+                    (progn
+                      (with-current-buffer existing-buffer
+                        (setq-local opencode-session--connection connection)
+                        (when-let ((info (opencode-session-info session)))
+                          (opencode-session--update-session info))
+                        (opencode-session--ensure-agents connection))
+                      (pop-to-buffer existing-buffer)
+                      (when on-ready
+                        (funcall on-ready existing-buffer)))
+                  (opencode-session-open session connection on-ready)))
+     :error (lambda (err)
+              (error "OpenCode: failed to resume session %s: %s"
+                     session-id (alist-get 'message err))))))
 
 (defun opencode--project-directory ()
   "Return the current project root directory, if any."

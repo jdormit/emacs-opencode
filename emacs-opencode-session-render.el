@@ -175,35 +175,75 @@ Only includes string, number, and boolean values."
       (opencode-session--insert-message message text face))))
 
 (defun opencode-session--replace-message-region (start end text face message)
-  "Replace text between START and END with TEXT, FACE, and MESSAGE."
-  (let ((inhibit-read-only t))
+  "Replace text between START and END with TEXT, FACE, and MESSAGE.
+Preserves point across all windows displaying the buffer so that
+the user can freely scroll or read while streaming updates arrive."
+  (let* ((inhibit-read-only t)
+         (old-start (marker-position start))
+         (old-end (marker-position end))
+         ;; Collect (window . offset-from-start) for each window whose
+         ;; point lies within the region being replaced.  Windows with
+         ;; point outside the region are unaffected by save-excursion.
+         (window-offsets
+          (let (offsets)
+            (dolist (win (get-buffer-window-list (current-buffer) nil t))
+              (let ((wpoint (window-point win)))
+                (when (and (>= wpoint old-start) (<= wpoint old-end))
+                  (push (cons win (- wpoint old-start)) offsets))))
+            offsets)))
     (save-excursion
-      (goto-char (marker-position start))
-      (delete-region (marker-position start) (marker-position end))
+      (goto-char old-start)
+      (delete-region old-start old-end)
       (let ((new-start (point)))
         (insert text)
         (let ((new-end (point)))
           (set-marker start new-start)
           (set-marker end new-end)
-          (opencode-session--apply-message-properties new-start new-end face message))))))
+          (opencode-session--apply-message-properties new-start new-end face message)
+          ;; Restore each window's point to the equivalent offset inside
+          ;; the new text (clamped to the new region boundaries).
+          (dolist (entry window-offsets)
+            (let* ((win (car entry))
+                   (offset (cdr entry))
+                   (target (min (+ new-start offset) new-end)))
+              (set-window-point win target))))))))
 
 (declare-function opencode-session--ensure-input-prompt "emacs-opencode-session-mode")
 
 (defun opencode-session--insert-message (message text face)
-  "Insert MESSAGE with TEXT and FACE at the end of the log."
-  (let ((inhibit-read-only t))
+  "Insert MESSAGE with TEXT and FACE at the end of the log.
+Preserves window points so the user can scroll freely during streaming."
+  (let* ((inhibit-read-only t)
+         (insert-pos (marker-position opencode-session--input-start-marker))
+         ;; Save window points that are at or after the insertion position.
+         ;; After insertion these windows should stay on the same content
+         ;; they were viewing, so we record their offset from insert-pos
+         ;; and shift them forward by the amount of text inserted.
+         (window-points
+          (let (pts)
+            (dolist (win (get-buffer-window-list (current-buffer) nil t))
+              (let ((wpoint (window-point win)))
+                (when (>= wpoint insert-pos)
+                  (push (cons win wpoint) pts))))
+            pts)))
     (save-excursion
-      (goto-char (marker-position opencode-session--input-start-marker))
+      (goto-char insert-pos)
       (let ((start (point)))
         (insert text)
         (let ((end (point)))
           (setf (opencode-message-start-marker message) (copy-marker start))
           (setf (opencode-message-end-marker message) (copy-marker end)))
         (insert "\n")
-        (set-marker opencode-session--input-start-marker (point))
-        (set-marker opencode-session--input-marker (point))
-        (opencode-session--ensure-input-prompt)
-        (opencode-session--apply-message-properties start (point) face message)))))
+        (let ((shift (- (point) insert-pos)))
+          (set-marker opencode-session--input-start-marker (point))
+          (set-marker opencode-session--input-marker (point))
+          (opencode-session--ensure-input-prompt)
+          (opencode-session--apply-message-properties start (point) face message)
+          ;; Restore window points shifted by the inserted amount.
+          (dolist (entry window-points)
+            (let ((win (car entry))
+                  (old-point (cdr entry)))
+              (set-window-point win (+ old-point shift)))))))))
 
 (defun opencode-session--apply-message-properties (start end _face message)
   "Apply read-only properties from START to END for MESSAGE.

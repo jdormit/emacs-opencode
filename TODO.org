@@ -1,5 +1,8 @@
 #+TITLE: Emacs OpenCode TODO
 
+* TODO fix (remove) acp timeout for prompts
+* TODO fix reconnect logic now that we've switched to acp
+* TODO fix session restore
 * TODO fix issue where you can't scroll around when a response is streaming in
 * IN PROGRESS completion-at-point in session buffer input
 - slash commands

@@ -24,9 +24,7 @@
   providers
   provider-catalog
   ;; ACP process (JSON-RPC over stdio)
-  process
-  ;; Question polling timer (active during prompt execution)
-  question-timer)
+  process)
 
 
 (defcustom opencode-server-host "127.0.0.1"
@@ -208,11 +206,8 @@ handshake succeeds.  Returns the updated CONNECTION."
 (defun opencode-connection-stop (connection)
   "Stop the OpenCode ACP process associated with CONNECTION."
   (require 'emacs-opencode-acp)
-  ;; Stop question polling timer
-  (when-let ((timer (opencode-connection-question-timer connection)))
-    (cancel-timer timer)
-    (setf (opencode-connection-question-timer connection) nil))
-  ;; Stop the ACP process
+  ;; Stop the ACP process.  Question/permission polling timers are
+  ;; per-buffer and self-terminate when the connection dies.
   (when-let ((process (opencode-connection-process connection)))
     (opencode-acp-stop process)
     (setf (opencode-connection-process connection) nil)))

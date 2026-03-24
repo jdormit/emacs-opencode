@@ -32,6 +32,17 @@
 (defvar-local opencode-session--task-poll-timers nil
   "Alist of active sub-agent poll timers: ((toolCallId . timer) ...).")
 
+(defvar-local opencode-session--question-poll-timer nil
+  "Timer for polling questions and permissions during prompt execution.")
+
+(defvar-local opencode-session--poll-failure-count 0
+  "Consecutive HTTP polling failure count.
+When this reaches `opencode-session--poll-failure-limit', all polling
+timers for the buffer are stopped.")
+
+(defconst opencode-session--poll-failure-limit 5
+  "Stop polling after this many consecutive HTTP failures.")
+
 (defcustom opencode-session-input-prompt "❯ "
   "Prompt string shown before the session input area."
   :type 'string
@@ -149,7 +160,8 @@ request completes."
 When the connection is alive, call CALLBACK immediately with the
 connection.  When the connection is dead or missing, start a new
 server for the session directory, update the buffer-local
-connection, and then call CALLBACK with the new connection."
+connection, resume the session on the new ACP server, and then
+call CALLBACK with the new connection."
   (if (and opencode-session--connection
            (opencode-connection-alive-p opencode-session--connection))
       (funcall callback opencode-session--connection)
@@ -158,6 +170,8 @@ connection, and then call CALLBACK with the new connection."
                          (and opencode-session--connection
                               (opencode-connection-directory
                                opencode-session--connection))))
+          (session-id (and opencode-session--session
+                          (opencode-session-id opencode-session--session)))
           (buffer (current-buffer)))
       (unless directory
         (error "OpenCode session has no associated directory"))
@@ -169,8 +183,26 @@ connection, and then call CALLBACK with the new connection."
            (with-current-buffer buffer
              (setq-local opencode-session--connection connection)
              (opencode-session--ensure-agents connection)
-             (message "OpenCode: reconnected")
-             (funcall callback connection))))))))
+             ;; Resume session on the new ACP server so it's registered.
+             (if session-id
+                 (opencode-acp-request
+                  (opencode-connection-process connection)
+                  "session/resume"
+                  (let ((params (make-hash-table :test 'equal)))
+                    (puthash "sessionId" session-id params)
+                    (puthash "cwd" (directory-file-name directory) params)
+                    (puthash "mcpServers" [] params)
+                    params)
+                  :success (lambda (_result)
+                             (when (buffer-live-p buffer)
+                               (with-current-buffer buffer
+                                 (message "OpenCode: reconnected")
+                                 (funcall callback connection))))
+                  :error (lambda (err)
+                           (message "OpenCode: failed to resume session: %s"
+                                    (alist-get 'message err))))
+               (message "OpenCode: reconnected")
+               (funcall callback connection)))))))))
 
 ;;; Input handling
 
@@ -475,18 +507,18 @@ BUFFER is the session buffer.  CONNECTION is the server connection."
      "session/prompt"
      params
      :success (lambda (_result)
-                (when (buffer-live-p buffer)
-                  (with-current-buffer buffer
-                    (opencode-session--stop-question-polling connection)
-                    (opencode-session--stop-all-task-polls)
-                    (opencode-acp--finalize-current-message)
-                    (opencode-session--update-status session-id "idle")
-                    (opencode-session--refresh-session-metadata connection session-id)
-                    (opencode-session--stop-command-reconcile))))
+                 (when (buffer-live-p buffer)
+                   (with-current-buffer buffer
+                     (opencode-session--stop-question-polling)
+                     (opencode-session--stop-all-task-polls)
+                     (opencode-acp--finalize-current-message)
+                     (opencode-session--update-status session-id "idle")
+                     (opencode-session--refresh-session-metadata connection session-id)
+                     (opencode-session--stop-command-reconcile))))
      :error (lambda (err)
               (when (buffer-live-p buffer)
                 (with-current-buffer buffer
-                  (opencode-session--stop-question-polling connection)
+                  (opencode-session--stop-question-polling)
                   (opencode-session--stop-all-task-polls)
                   (opencode-session--stop-command-reconcile)
                   (opencode-acp--finalize-current-message)
@@ -494,6 +526,7 @@ BUFFER is the session buffer.  CONNECTION is the server connection."
                   (opencode-session--restore-input input)
                   (message "OpenCode: prompt failed: %s"
                            (alist-get 'message err))))))))
+
 
 (defun opencode-session--send-input-http (connection session-id input agent buffer)
   "Send INPUT via HTTP prompt_async with AGENT for SESSION-ID.
@@ -516,7 +549,7 @@ BUFFER is the session buffer.  CONNECTION is the server connection."
      :error (lambda (&rest _args)
               (when (buffer-live-p buffer)
                 (with-current-buffer buffer
-                  (opencode-session--stop-question-polling connection)
+                  (opencode-session--stop-question-polling)
                   (opencode-session--update-status session-id "idle")
                   (opencode-session--restore-input input)
                   (message "OpenCode: failed to send prompt via HTTP")))))))
@@ -1050,6 +1083,7 @@ When the session becomes idle, finalize the turn in BUFFER."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (opencode-session--stop-status-poll)
+      (setq opencode-session--poll-failure-count 0)
       (setq opencode-session--status-poll-timer
             (run-at-time 1 1
                          #'opencode-session--poll-status
@@ -1071,6 +1105,7 @@ When the session becomes idle, finalize the turn in BUFFER."
   (opencode-client-session-status
    connection
    :success (lambda (&rest args)
+              (opencode-session--poll-record-success buffer)
               (let* ((data (plist-get args :data))
                      ;; Session IDs become symbols after JSON parsing
                      (status-entry (or (alist-get (intern session-id) data)
@@ -1082,14 +1117,15 @@ When the session becomes idle, finalize the turn in BUFFER."
                   (when (buffer-live-p buffer)
                     (with-current-buffer buffer
                       (opencode-session--stop-status-poll)
-                      (opencode-session--stop-question-polling connection)
+                      (opencode-session--stop-question-polling)
                       (opencode-session--stop-all-task-polls)
                       (opencode-acp--finalize-current-message)
                       (opencode-session--update-status session-id "idle")
                       (opencode-session--refresh-session-metadata
                        connection session-id)
                       (opencode-session--stop-command-reconcile))))))
-   :error (lambda (&rest _args) nil))))
+   :error (lambda (&rest _args)
+            (opencode-session--poll-record-failure buffer)))))
 
 ;;; Sub-agent tool call polling
 ;;
@@ -1142,6 +1178,7 @@ transitions to Layer 2 polling."
      :limit 2
      :success
      (lambda (&rest args)
+       (opencode-session--poll-record-success buffer)
        (let* ((data (plist-get args :data))
               (items (opencode-session--normalize-items data)))
          (catch 'found
@@ -1183,8 +1220,9 @@ transitions to Layer 2 polling."
                                    connection sub-session-id buffer)))
                              (push (cons tool-call-id timer)
                                    opencode-session--task-poll-timers))))
-                       (throw 'found t))))))))))
-     :error (lambda (&rest _args) nil))))
+                        (throw 'found t))))))))))
+     :error (lambda (&rest _args)
+              (opencode-session--poll-record-failure buffer)))))
 
 (defun opencode-session--poll-subagent-tools
     (connection subagent-session-id buffer)
@@ -1206,6 +1244,7 @@ tracking data, then re-renders the parent task part in BUFFER."
      subagent-session-id
      :success
      (lambda (&rest args)
+       (opencode-session--poll-record-success buffer)
        (let* ((data (plist-get args :data))
               (items (opencode-session--normalize-items data))
               (updated nil))
@@ -1228,7 +1267,8 @@ tracking data, then re-renders the parent task part in BUFFER."
                          (opencode-session--subagent-parent
                           subagent-session-id)))
                (opencode-session--rerender-task-part parent-info))))))
-     :error (lambda (&rest _args) nil))))
+     :error (lambda (&rest _args)
+              (opencode-session--poll-record-failure buffer)))))
 
 ;;; History loading
 
@@ -1305,31 +1345,57 @@ Call ON-HISTORY-LOADED with BUFFER after the request completes."
 (defun opencode-session--start-question-polling (connection buffer)
   "Start polling for pending questions and permissions on CONNECTION.
 BUFFER is the session buffer where prompts will appear."
-  (opencode-session--stop-question-polling connection)
-  (setf (opencode-connection-question-timer connection)
-        (run-at-time 1 1
-                     #'opencode-session--poll-pending
-                     connection buffer)))
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (opencode-session--stop-question-polling)
+      (setq opencode-session--poll-failure-count 0)
+      (setq opencode-session--question-poll-timer
+            (run-at-time 1 1
+                         #'opencode-session--poll-pending
+                         connection buffer)))))
 
-(defun opencode-session--stop-question-polling (connection)
-  "Stop question and permission polling on CONNECTION."
-  (when-let ((timer (opencode-connection-question-timer connection)))
-    (cancel-timer timer)
-    (setf (opencode-connection-question-timer connection) nil)))
+(defun opencode-session--stop-question-polling ()
+  "Stop question and permission polling in the current buffer."
+  (when opencode-session--question-poll-timer
+    (cancel-timer opencode-session--question-poll-timer)
+    (setq opencode-session--question-poll-timer nil)))
 
 (defun opencode-session--poll-pending (connection buffer)
   "Poll for pending questions and permissions on CONNECTION.
 Prompts the user in BUFFER."
-  (when (and (buffer-live-p buffer)
-             (opencode-connection-alive-p connection))
+  (if (not (and (buffer-live-p buffer)
+                (opencode-connection-alive-p connection)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (opencode-session--stop-question-polling)))
     (opencode-session--poll-questions connection buffer)
     (opencode-session--poll-permissions connection buffer)))
+
+(defun opencode-session--poll-record-failure (buffer)
+  "Record a polling failure in BUFFER and stop polling if limit reached."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (cl-incf opencode-session--poll-failure-count)
+      (when (>= opencode-session--poll-failure-count
+               opencode-session--poll-failure-limit)
+        (opencode-session--stop-question-polling)
+        (opencode-session--stop-status-poll)
+        (opencode-session--stop-all-task-polls)
+        (message "OpenCode: polling stopped after %d consecutive failures"
+                 opencode-session--poll-failure-limit)))))
+
+(defun opencode-session--poll-record-success (buffer)
+  "Reset the polling failure counter in BUFFER."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq opencode-session--poll-failure-count 0))))
 
 (defun opencode-session--poll-questions (connection buffer)
   "Poll for pending questions on CONNECTION and prompt in BUFFER."
   (opencode-client-questions
    connection
    :success (lambda (&rest args)
+              (opencode-session--poll-record-success buffer)
               (let ((data (plist-get args :data)))
                 (when (buffer-live-p buffer)
                   (with-current-buffer buffer
@@ -1349,7 +1415,8 @@ Prompts the user in BUFFER."
                                              (with-current-buffer buffer
                                                (opencode-session--prompt-question
                                                 question)))))))))))))
-   :error (lambda (&rest _args) nil)))
+   :error (lambda (&rest _args)
+            (opencode-session--poll-record-failure buffer))))
 
 (declare-function opencode-client-permissions "emacs-opencode-client")
 (declare-function opencode-client-permission-reply "emacs-opencode-client")
@@ -1361,6 +1428,7 @@ handler (identified by matching tool call IDs)."
   (opencode-client-permissions
    connection
    :success (lambda (&rest args)
+              (opencode-session--poll-record-success buffer)
               (let ((data (plist-get args :data)))
                 (when (buffer-live-p buffer)
                   (with-current-buffer buffer
@@ -1389,7 +1457,8 @@ handler (identified by matching tool call IDs)."
                                                  (with-current-buffer buffer
                                                    (opencode-session--prompt-polled-permission
                                                     connection perm-copy)))))))))))))))
-   :error (lambda (&rest _args) nil)))
+   :error (lambda (&rest _args)
+            (opencode-session--poll-record-failure buffer))))
 
 (defun opencode-session--prompt-polled-permission (connection perm)
   "Prompt the user for permission PERM and reply via HTTP on CONNECTION."
