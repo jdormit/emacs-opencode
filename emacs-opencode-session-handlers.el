@@ -1,4 +1,4 @@
-;;; emacs-opencode-session-handlers.el --- SSE event handlers  -*- lexical-binding: t; -*-
+;;; emacs-opencode-session-handlers.el --- Session event handlers  -*- lexical-binding: t; -*-
 
 (require 'cl-lib)
 (require 'subr-x)
@@ -6,7 +6,6 @@
 (require 'emacs-opencode-message)
 (require 'emacs-opencode-client)
 (require 'emacs-opencode-connection)
-(require 'emacs-opencode-sse)
 
 (declare-function opencode-session--update-session "emacs-opencode-session-mode")
 (declare-function opencode-session--update-status "emacs-opencode-session-mode")
@@ -463,44 +462,6 @@ Returns nil when PATH is not a string."
   "Handle SSE file update DATA by reverting buffers."
   (dolist (path (opencode-session--event-file-paths data))
     (opencode-session--maybe-revert-buffer path)))
-
-;;; Handler registrations
-
-(opencode-sse-define-handler session-created "session.created" (_event data)
-  (opencode-session--handle-session-created _event data))
-
-(opencode-sse-define-handler session-updated "session.updated" (_event data)
-  (opencode-session--handle-session-updated _event data))
-
-(opencode-sse-define-handler session-status "session.status" (_event data)
-  (opencode-session--handle-session-status _event data))
-
-(opencode-sse-define-handler session-idle "session.idle" (_event data)
-  (opencode-session--handle-session-idle _event data))
-
-(opencode-sse-define-handler session-error "session.error" (_event data)
-  (opencode-session--handle-session-error _event data))
-
-(opencode-sse-define-handler permission-asked "permission.asked" (_event data)
-  (opencode-session--handle-permission-asked _event data))
-
-(opencode-sse-define-handler question-asked "question.asked" (_event data)
-  (opencode-session--handle-question-asked _event data))
-
-(opencode-sse-define-handler message-updated "message.updated" (_event data)
-  (opencode-session--handle-message-updated _event data))
-
-(opencode-sse-define-handler message-part-updated "message.part.updated" (_event data)
-  (opencode-session--handle-message-part-updated _event data))
-
-(opencode-sse-define-handler message-part-delta "message.part.delta" (_event data)
-  (opencode-session--handle-message-part-delta _event data))
-
-(opencode-sse-define-handler file-edited "file.edited" (_event data)
-  (opencode-session--handle-file-updated _event data))
-
-(opencode-sse-define-handler file-watcher-updated "file.watcher.updated" (_event data)
-  (opencode-session--handle-file-updated _event data))
 
 (provide 'emacs-opencode-session-handlers)
 

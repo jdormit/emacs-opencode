@@ -5,6 +5,8 @@
 (require 'subr-x)
 (require 'emacs-opencode-connection)
 (require 'emacs-opencode-client)
+(require 'emacs-opencode-acp)
+(require 'emacs-opencode-acp-handlers)
 (require 'emacs-opencode-session)
 (require 'emacs-opencode-session-mode)
 
@@ -57,8 +59,8 @@ ON-SUCCESS and ON-ERROR are called with request args."
    :success on-success
    :error on-error))
 
-(defun opencode--ready-timeout (directory connection)
-  "Handle readiness timeout for DIRECTORY and CONNECTION."
+(defun opencode--ready-timeout (_directory connection)
+  "Handle readiness timeout for CONNECTION."
   (opencode-connection-stop connection)
   (error "OpenCode server did not become ready within %ss" opencode-ready-timeout))
 
@@ -150,11 +152,26 @@ When INCLUDE-IDENTIFIERS is non-nil, include slug and ID."
   "Prompt for a session via CONNECTION using PROMPT.
 
 Call ON-SELECTED with the selected session and session info data."
-  (opencode-client-sessions
-   connection
-   :success (lambda (&rest args)
-              (let* ((data (plist-get args :data))
-                     (items (opencode--session-items data))
+  (opencode-acp-request
+   (opencode-connection-process connection)
+   "session/list"
+   (let ((params (make-hash-table :test 'equal)))
+     (puthash "cwd" (directory-file-name (opencode-connection-directory connection)) params)
+     params)
+   :success (lambda (result)
+              (let* ((sessions (alist-get 'sessions result))
+                     (items (mapcar
+                             (lambda (s)
+                               ;; Convert ACP session info to the alist
+                               ;; format expected by session-choices
+                               `((id . ,(alist-get 'sessionId s))
+                                 (title . ,(alist-get 'title s))
+                                 (directory . ,(alist-get 'cwd s))
+                                 (time . ((updated
+                                           . ,(alist-get 'updatedAt s))))))
+                             (if (vectorp sessions)
+                                 (append sessions nil)
+                               sessions)))
                      (ordered-items (opencode--order-sessions-by-buffer items))
                      (choices (opencode--session-choices ordered-items))
                      (table (lambda (string pred action)
@@ -167,8 +184,9 @@ Call ON-SELECTED with the selected session and session info data."
                      (info (cdr (assoc selected choices)))
                      (session (opencode--session-from-data info)))
                 (funcall on-selected session info)))
-   :error (lambda (&rest _args)
-            (error "Failed to fetch OpenCode sessions"))))
+   :error (lambda (err)
+            (error "Failed to fetch OpenCode sessions: %s"
+                   (alist-get 'message err)))))
 
 (defun opencode--ensure-session-buffer (session connection &optional on-ready)
   "Open or reuse a buffer for SESSION using CONNECTION.
@@ -206,7 +224,7 @@ and skip prompting unless a prefix arg is supplied."
 
 ;;;###autoload
 (defun opencode-shutdown (directory)
-  "Stop OpenCode server for DIRECTORY and remove it from the registry."
+  "Stop OpenCode for DIRECTORY and remove it from the registry."
   (interactive
    (list
     (completing-read
@@ -218,31 +236,29 @@ and skip prompting unless a prefix arg is supplied."
          (connection (opencode--get-connection normalized)))
     (unless connection
       (error "No OpenCode connection registered for %s" normalized))
-    (opencode-sse-close connection)
     (opencode-connection-stop connection)
     (opencode--unregister-connection normalized)
-    (message "Stopped OpenCode server for %s" normalized)))
+    (message "Stopped OpenCode for %s" normalized)))
 
 ;;;###autoload
 (defun opencode-shutdown-all ()
-  "Stop all registered OpenCode servers and clear the registry."
+  "Stop all registered OpenCode processes and clear the registry."
   (interactive)
   (let ((directories (opencode--registered-directories)))
     (dolist (directory directories)
       (let ((connection (opencode--get-connection directory)))
         (when connection
-          (opencode-sse-close connection)
           (opencode-connection-stop connection)
           (opencode--unregister-connection directory)))))
-  (message "Stopped all OpenCode servers"))
+  (message "Stopped all OpenCode processes"))
 
 ;;;###autoload
 (defun opencode-run-server (directory &optional on-ready)
-  "Start or reuse an OpenCode server for DIRECTORY.
+  "Start or reuse an OpenCode ACP process for DIRECTORY.
 
 When a connection already exists for DIRECTORY, reuse it without restarting
-its server process. When ON-READY is non-nil, call it with the connection
-once the server is ready."
+its process.  When ON-READY is non-nil, call it with the connection once
+the ACP initialize handshake and HTTP health check succeed."
   (interactive (list (opencode--read-directory "OpenCode directory: ")))
   (let* ((normalized (opencode--normalize-directory directory))
          (existing (opencode--get-connection normalized)))
@@ -253,7 +269,6 @@ once the server is ready."
             (funcall on-ready existing))
           existing)
       (when existing
-        (opencode-sse-close existing)
         (opencode-connection-stop existing)
         (opencode--unregister-connection normalized))
       (let* ((connection (opencode-connection-create-for-directory normalized))
@@ -264,16 +279,16 @@ once the server is ready."
          (lambda (_process)
            (when (timerp timeout)
              (cancel-timer timeout))
+           ;; ACP initialized — now verify the embedded HTTP server
            (opencode--check-health
             connection
             (lambda (&rest _args)
               (opencode--register-connection normalized connection)
-              (message "Started OpenCode server for %s" normalized)
+              (message "Started OpenCode for %s" normalized)
               (when on-ready
                 (funcall on-ready connection)))
             (lambda (&rest _args)
-              (error "OpenCode server failed to become healthy for %s" normalized)))
-           (opencode-sse-open connection)))
+              (error "OpenCode HTTP server failed health check for %s" normalized)))))
         (opencode--register-connection normalized connection)
         connection))))
 
@@ -285,17 +300,21 @@ once the server is ready."
     (opencode-run-server
      normalized
      (lambda (connection)
-       (opencode-request
-        connection
-        'POST
-        "/session"
-        :data `(("directory" . ,normalized))
-        :success (lambda (&rest args)
-                   (let* ((data (plist-get args :data))
-                          (session (opencode--session-from-data data)))
+       (opencode-acp-request
+        (opencode-connection-process connection)
+        "session/new"
+        (let ((params (make-hash-table :test 'equal)))
+           (puthash "cwd" (directory-file-name normalized) params)
+           (puthash "mcpServers" [] params)
+           params)
+         :success (lambda (result)
+                    (let* ((session-id (alist-get 'sessionId result))
+                           (session (opencode-session-create :id session-id
+                                                            :directory normalized)))
                      (opencode-session-open session connection)))
-        :error (lambda (&rest _args)
-                 (error "Failed to create OpenCode session")))))))
+        :error (lambda (err)
+                 (error "Failed to create OpenCode session: %s"
+                        (alist-get 'message err))))))))
 
 ;;;###autoload
 (defun opencode-ask (directory prompt)
@@ -308,23 +327,27 @@ once the server is ready."
     (opencode-run-server
      normalized
      (lambda (connection)
-       (opencode-request
-        connection
-        'POST
-        "/session"
-        :data `(("directory" . ,normalized))
-        :success (lambda (&rest args)
-                   (let* ((data (plist-get args :data))
-                          (session (opencode--session-from-data data)))
-                     (opencode-session-open
-                      session
-                      connection
-                      (lambda (buffer)
-                        (with-current-buffer buffer
-                          (opencode-session-insert-input prompt)
-                          (opencode-session-send-input))))))
-        :error (lambda (&rest _args)
-                 (error "Failed to create OpenCode session")))))))
+       (opencode-acp-request
+        (opencode-connection-process connection)
+        "session/new"
+        (let ((params (make-hash-table :test 'equal)))
+           (puthash "cwd" (directory-file-name normalized) params)
+           (puthash "mcpServers" [] params)
+           params)
+         :success (lambda (result)
+                    (let* ((session-id (alist-get 'sessionId result))
+                           (session (opencode-session-create :id session-id
+                                                            :directory normalized)))
+                      (opencode-session-open
+                       session
+                       connection
+                       (lambda (buffer)
+                         (with-current-buffer buffer
+                           (opencode-session-insert-input prompt)
+                           (opencode-session-send-input))))))
+         :error (lambda (err)
+                  (error "Failed to create OpenCode session: %s"
+                        (alist-get 'message err))))))))
 
 (defun opencode--contextual-snippet ()
   "Return contextual buffer text and metadata.

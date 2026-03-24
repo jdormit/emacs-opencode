@@ -5,8 +5,6 @@
 (require 'emacs-opencode-session-vars)
 (require 'emacs-opencode-connection)
 (require 'emacs-opencode-client)
-(require 'emacs-opencode-sse)
-
 (declare-function opencode-session--render-header "emacs-opencode-session-header")
 (declare-function opencode-session--active-model "emacs-opencode-session-header")
 (declare-function opencode-session--session-used-models "emacs-opencode-session-header")
@@ -593,19 +591,13 @@ ON-SUCCESS is called when providers are loaded."
   "Dispose instance state for CONNECTION, then refresh providers.
 
 CALLBACK is passed through to `opencode-session--refresh-providers'."
-  (let ((restart-sse
-         (lambda ()
-           (opencode-sse-close connection)
-           (opencode-sse-open connection))))
-    (opencode-client-instance-dispose
-     connection
-     :success (lambda (&rest _args)
-                (funcall restart-sse)
-                (opencode-session--refresh-providers connection callback))
-     :error (lambda (&rest _args)
-              (message "OpenCode: failed to dispose instance; refreshing providers")
-              (funcall restart-sse)
-              (opencode-session--refresh-providers connection callback)))))
+  (opencode-client-instance-dispose
+   connection
+   :success (lambda (&rest _args)
+              (opencode-session--refresh-providers connection callback))
+   :error (lambda (&rest _args)
+            (message "OpenCode: failed to dispose instance; refreshing providers")
+            (opencode-session--refresh-providers connection callback))))
 
 (defun opencode-session--connect-provider (provider-id callback)
   "Run the auth flow for PROVIDER-ID, then call CALLBACK on success."

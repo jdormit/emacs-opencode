@@ -15,6 +15,19 @@
 
 (declare-function opencode-run-server "emacs-opencode" (directory &optional on-ready))
 (declare-function opencode-session--maybe-register-subagent "emacs-opencode-session-handlers")
+(declare-function opencode-acp-request "emacs-opencode-acp")
+(declare-function opencode-acp-notify "emacs-opencode-acp")
+(declare-function opencode-acp--finalize-current-message "emacs-opencode-acp-handlers")
+(declare-function opencode-client-session-get "emacs-opencode-client")
+
+(defvar opencode-acp--part-counter)
+(defvar opencode-acp--seen-permission-ids)
+
+(defvar-local opencode-session--command-reconcile-timer nil
+  "Timer for polling the server's user message after a slash command.")
+
+(defvar-local opencode-session--status-poll-timer nil
+  "Timer for polling session status during HTTP-initiated prompts.")
 
 (defcustom opencode-session-input-prompt "❯ "
   "Prompt string shown before the session input area."
@@ -198,11 +211,10 @@ connection, and then call CALLBACK with the new connection."
                   (opencode-session--clear-input)
                   (message "OpenCode shell command submitted"))
                  ('message
-                  (opencode-session--send-input connection
-                                                opencode-session--session
-                                                input)
-                  (opencode-session--clear-input)
-                  (message "OpenCode message submitted")))))))))))
+                   (opencode-session--clear-input)
+                   (opencode-session--send-input connection
+                                                 opencode-session--session
+                                                 input)))))))))))
 
 
 ;;;###autoload
@@ -271,6 +283,7 @@ connection, and then call CALLBACK with the new connection."
 (defun opencode-session-interrupt ()
   "Interrupt the active prompt for the current session."
   (interactive)
+  (require 'emacs-opencode-acp)
   (unless opencode-session--session
     (error "OpenCode session is not connected"))
   (let ((buffer (current-buffer)))
@@ -281,13 +294,12 @@ connection, and then call CALLBACK with the new connection."
            (let ((session-id (opencode-session-id opencode-session--session)))
              (unless session-id
                (error "OpenCode session ID is missing"))
-             (opencode-client-session-abort
-              connection
-              session-id
-              :success (lambda (&rest _args)
-                         (message "OpenCode: interrupt requested"))
-              :error (lambda (&rest _args)
-                       (message "OpenCode: failed to interrupt session"))))))))))
+             ;; ACP cancel is a notification (no response)
+             (opencode-acp-notify
+              (opencode-connection-process connection)
+              "session/cancel"
+              `((sessionId . ,session-id)))
+             (message "OpenCode: interrupt requested"))))))))
 
 ;;; Input area management
 
@@ -402,27 +414,107 @@ parts extracted from the input."
     (nreverse parts)))
 
 (defun opencode-session--send-input (connection session input)
-  "Send INPUT to SESSION using CONNECTION.
+  "Send INPUT to SESSION using CONNECTION via ACP.
 
-Parses @-agent mentions from INPUT and includes them as agent parts
-alongside the text part.  Restores INPUT when the request fails."
-  (let ((session-id (opencode-session-id session))
-        (parts (opencode-session--build-message-parts input))
-        (agent opencode-session--agent)
-        (model (opencode-session--selected-model))
-        (variant opencode-session--variant))
+When @-agent mentions are present, sends via HTTP prompt_async (which
+supports the per-prompt agent parameter) and polls session status for
+completion.  Otherwise sends via ACP session/prompt.
+Restores INPUT when the request fails."
+  (require 'emacs-opencode-acp)
+  (require 'emacs-opencode-acp-handlers)
+  (let* ((session-id (opencode-session-id session))
+         (buffer (current-buffer))
+         (agent-names (opencode-session--extract-agent-mentions input))
+         (mentioned-agent (car agent-names)))
+    ;; Create a synthetic user message in the buffer
+    (let* ((msg-id (format "user-%s-%d" session-id
+                           (cl-incf opencode-acp--part-counter)))
+           (part-id (format "user-text-%s" msg-id))
+           (message (opencode-message-create
+                     :id msg-id
+                     :session-id session-id
+                     :role "user"))
+           (part (opencode-message-part-create
+                  :id part-id
+                  :session-id session-id
+                  :message-id msg-id
+                  :type "text"
+                  :text input)))
+      (setf (opencode-message-parts message) (list (cons part-id part)))
+      (setf (opencode-message-text message) input)
+      (setq opencode-session--messages
+            (append opencode-session--messages (list message)))
+      (opencode-session--render-message message))
+    ;; Mark busy
+    (opencode-session--update-status session-id "running")
+    ;; Start question polling
+    (opencode-session--start-question-polling connection buffer)
+    ;; Dispatch: ACP prompt for normal messages, HTTP for @agent mentions
+    (if mentioned-agent
+        (opencode-session--send-input-http
+         connection session-id input mentioned-agent buffer)
+      (opencode-session--send-input-acp
+       connection session-id input buffer))))
+
+(defun opencode-session--send-input-acp (connection session-id input buffer)
+  "Send INPUT via ACP session/prompt for SESSION-ID.
+BUFFER is the session buffer.  CONNECTION is the server connection."
+  (let* ((acp-parts (let ((p (make-hash-table :test 'equal)))
+                      (puthash "type" "text" p)
+                      (puthash "text" input p)
+                      (vector p)))
+         (params (let ((p (make-hash-table :test 'equal)))
+                   (puthash "sessionId" session-id p)
+                   (puthash "prompt" acp-parts p)
+                   p)))
+    (opencode-acp-request
+     (opencode-connection-process connection)
+     "session/prompt"
+     params
+     :success (lambda (_result)
+                (when (buffer-live-p buffer)
+                  (with-current-buffer buffer
+                    (opencode-session--stop-question-polling connection)
+                    (opencode-acp--finalize-current-message)
+                    (opencode-session--update-status session-id "idle")
+                    (opencode-session--refresh-session-metadata connection session-id)
+                    (opencode-session--stop-command-reconcile))))
+     :error (lambda (err)
+              (when (buffer-live-p buffer)
+                (with-current-buffer buffer
+                  (opencode-session--stop-question-polling connection)
+                  (opencode-session--stop-command-reconcile)
+                  (opencode-acp--finalize-current-message)
+                  (opencode-session--update-status session-id "idle")
+                  (opencode-session--restore-input input)
+                  (message "OpenCode: prompt failed: %s"
+                           (alist-get 'message err))))))))
+
+(defun opencode-session--send-input-http (connection session-id input agent buffer)
+  "Send INPUT via HTTP prompt_async with AGENT for SESSION-ID.
+Used for @-agent mentions since ACP doesn't support per-prompt agent
+selection.  Streaming updates still arrive via ACP notifications.
+Polls session status to detect turn completion.
+BUFFER is the session buffer.  CONNECTION is the server connection."
+  (let ((parts `[((type . "text") (text . ,input))]))
     (opencode-client-session-prompt-async
      connection
      session-id
      parts
      :agent agent
-     :variant variant
-     :model model
      :success (lambda (&rest _args)
-                (message "OpenCode: message queued"))
+                ;; Fire-and-forget succeeded — start polling for completion
+                (when (buffer-live-p buffer)
+                  (with-current-buffer buffer
+                    (opencode-session--start-status-poll
+                     connection session-id buffer))))
      :error (lambda (&rest _args)
-              (opencode-session--restore-input input)
-                (message "OpenCode: failed to send message")))))
+              (when (buffer-live-p buffer)
+                (with-current-buffer buffer
+                  (opencode-session--stop-question-polling connection)
+                  (opencode-session--update-status session-id "idle")
+                  (opencode-session--restore-input input)
+                  (message "OpenCode: failed to send prompt via HTTP")))))))
 
 (defun opencode-session--classify-input (input)
   "Classify INPUT and return (TYPE . PAYLOAD).
@@ -455,41 +547,29 @@ Restores the original input (with leading !) when the request fails."
               (message "OpenCode: failed to send shell command")))))
 
 (defun opencode-session--maybe-send-command (connection session input)
-  "Send slash command INPUT to SESSION using CONNECTION when applicable.
+  "Send slash command INPUT to SESSION using CONNECTION.
 
-Falls back to a normal prompt when INPUT does not match an available command."
+ACP handles slash commands within the prompt method — if the text starts
+with /, ACP parses it as a command.  Falls back to a normal prompt when
+INPUT does not match an available command."
   (let ((buffer (current-buffer)))
     (opencode-client-commands
      connection
-     :success (lambda (&rest args)
+     :success (lambda (&rest _args)
                 (when (buffer-live-p buffer)
                   (with-current-buffer buffer
-                    (let* ((command-info (opencode-session--parse-command-input input))
-                           (command (car command-info))
-                           (arguments (cadr command-info))
-                           (data (plist-get args :data))
-                           (items (opencode-session--command-items data))
-                           (names (opencode-session--command-names items))
-                           (matched (and command (member command names))))
-                      (if matched
-                          (progn
-                            (opencode-client-session-command
-                             connection
-                             (opencode-session-id session)
-                             command
-                             arguments
-                             :agent opencode-session--agent
-                             :variant opencode-session--variant
-                             :model (opencode-session--selected-model-string)
-                             :success (lambda (&rest _args)
-                                        (message "OpenCode command queued"))
-                             :error (lambda (&rest _args)
-                                      (opencode-session--restore-input input)
-                                      (message "OpenCode: failed to send command")))
-                            (opencode-session--clear-input))
-                        (opencode-session--send-input connection session input)
-                        (opencode-session--clear-input)
-                        (message "OpenCode message submitted"))))))
+                    ;; ACP handles /commands within session/prompt, so
+                    ;; we send them as regular prompts either way.
+                    (opencode-session--clear-input)
+                    (opencode-session--send-input connection session input)
+                    ;; Start polling for the expanded command text.
+                    ;; The server creates the user message with expanded
+                    ;; text immediately; we poll until we see it differ
+                    ;; from the raw /command text.
+                    (opencode-session--start-command-reconcile
+                     connection
+                     (opencode-session-id session)
+                     input buffer))))
      :error (lambda (&rest _args)
               (error "Failed to fetch OpenCode commands")))))
 
@@ -681,6 +761,104 @@ PREVIOUS-NAME is the previous buffer name to compare against."
           (opencode-session--maybe-start-spinner)
           (opencode-session--maybe-stop-spinner))))))
 
+(defun opencode-session--refresh-session-metadata (connection session-id)
+  "Fetch session metadata via HTTP and update the buffer.
+Uses the embedded HTTP server to get the canonical session data
+including title, timestamps, etc."
+  (opencode-client-session-get
+   connection
+   session-id
+   :success (lambda (&rest args)
+              (let ((data (plist-get args :data)))
+                (when-let ((buffer (opencode-session--buffer-for-session session-id)))
+                  (when (buffer-live-p buffer)
+                    (with-current-buffer buffer
+                      (opencode-session--update-session data))))))
+   :error (lambda (&rest _args)
+            ;; Non-fatal — just means we don't get the title update
+            nil)))
+
+(defun opencode-session--start-command-reconcile (connection session-id raw-input buffer)
+  "Start polling for the expanded slash command user message.
+CONNECTION is the server connection.  SESSION-ID is the session.
+RAW-INPUT is the original /command text.  BUFFER is the session buffer.
+Polls every 500ms until the server's user message differs from RAW-INPUT."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (opencode-session--stop-command-reconcile)
+      (setq opencode-session--command-reconcile-timer
+            (run-at-time 0.5 0.5
+                         #'opencode-session--poll-command-reconcile
+                         connection session-id raw-input buffer)))))
+
+(defun opencode-session--stop-command-reconcile ()
+  "Stop the command reconcile polling timer."
+  (when opencode-session--command-reconcile-timer
+    (cancel-timer opencode-session--command-reconcile-timer)
+    (setq opencode-session--command-reconcile-timer nil)))
+
+(defun opencode-session--poll-command-reconcile (connection session-id raw-input buffer)
+  "Poll for the expanded user message and update BUFFER when found.
+Fetches the latest message from SESSION-ID via CONNECTION.  If the
+server's user message text differs from RAW-INPUT, update the synthetic
+message and stop polling."
+  (if (not (and (buffer-live-p buffer)
+                (opencode-connection-alive-p connection)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (opencode-session--stop-command-reconcile)))
+  (opencode-client-session-messages
+   connection
+   session-id
+   :limit 2
+   :success (lambda (&rest args)
+              (let* ((data (plist-get args :data))
+                     (items (cond
+                              ((listp data) data)
+                              ((vectorp data) (append data nil))
+                              (t nil)))
+                     ;; Find the most recent user message from the server
+                     (user-item (cl-find-if
+                                 (lambda (item)
+                                   (let ((info (alist-get 'info item)))
+                                     (string= (alist-get 'role info) "user")))
+                                 (reverse items))))
+                (when (and user-item (buffer-live-p buffer))
+                  (let* ((info (alist-get 'info user-item))
+                         (parts-data (alist-get 'parts user-item))
+                         ;; Extract the text from the server's user message
+                         (server-parts (opencode-session--normalize-items parts-data))
+                         (server-text
+                          (mapconcat
+                           (lambda (p)
+                             (or (alist-get 'text p) ""))
+                           (seq-filter
+                            (lambda (p) (string= (alist-get 'type p) "text"))
+                            server-parts)
+                           "")))
+                    ;; Only update if the text differs from the raw command
+                    (when (and (not (string-empty-p server-text))
+                               (not (string= (string-trim server-text)
+                                             (string-trim raw-input))))
+                      (with-current-buffer buffer
+                        ;; Stop polling — we found the expanded text
+                        (opencode-session--stop-command-reconcile)
+                        ;; Find the last synthetic user message
+                        (when-let ((synthetic-msg
+                                    (cl-find-if
+                                     (lambda (msg)
+                                       (and (string= (opencode-message-role msg) "user")
+                                            (string-prefix-p "user-"
+                                                             (opencode-message-id msg))))
+                                     (reverse opencode-session--messages))))
+                          ;; Replace its parts and text with the server's version
+                          (let ((new-parts (opencode-session--hydrate-parts parts-data)))
+                            (setf (opencode-message-parts synthetic-msg) new-parts)
+                            (setf (opencode-message-text synthetic-msg)
+                                  (opencode-session--message-text synthetic-msg))
+                            (opencode-session--render-message synthetic-msg)))))))))
+   :error (lambda (&rest _args) nil))))
+
 ;;; Command completion
 
 (defun opencode-session--command-items (data)
@@ -857,6 +1035,56 @@ COMMAND is nil when INPUT is not a slash command."
         (list command arguments))
     (list nil "")))
 
+;;; Session status polling (for HTTP-initiated prompts)
+
+(declare-function opencode-client-session-status "emacs-opencode-client")
+
+(defun opencode-session--start-status-poll (connection session-id buffer)
+  "Start polling session status for SESSION-ID on CONNECTION.
+When the session becomes idle, finalize the turn in BUFFER."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (opencode-session--stop-status-poll)
+      (setq opencode-session--status-poll-timer
+            (run-at-time 1 1
+                         #'opencode-session--poll-status
+                         connection session-id buffer)))))
+
+(defun opencode-session--stop-status-poll ()
+  "Stop session status polling."
+  (when opencode-session--status-poll-timer
+    (cancel-timer opencode-session--status-poll-timer)
+    (setq opencode-session--status-poll-timer nil)))
+
+(defun opencode-session--poll-status (connection session-id buffer)
+  "Check if SESSION-ID is idle on CONNECTION and finalize the turn in BUFFER."
+  (if (not (and (buffer-live-p buffer)
+                (opencode-connection-alive-p connection)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (opencode-session--stop-status-poll)))
+  (opencode-client-session-status
+   connection
+   :success (lambda (&rest args)
+              (let* ((data (plist-get args :data))
+                     ;; Session IDs become symbols after JSON parsing
+                     (status-entry (or (alist-get (intern session-id) data)
+                                       (alist-get session-id data nil nil #'string=)))
+                     (status-type (alist-get 'type status-entry)))
+                ;; Session is idle when its entry is absent or type is "idle"
+                (when (or (null status-entry)
+                          (string= status-type "idle"))
+                  (when (buffer-live-p buffer)
+                    (with-current-buffer buffer
+                      (opencode-session--stop-status-poll)
+                      (opencode-session--stop-question-polling connection)
+                      (opencode-acp--finalize-current-message)
+                      (opencode-session--update-status session-id "idle")
+                      (opencode-session--refresh-session-metadata
+                       connection session-id)
+                      (opencode-session--stop-command-reconcile))))))
+   :error (lambda (&rest _args) nil))))
+
 ;;; History loading
 
 (defun opencode-session--load-history (connection session buffer &optional on-history-loaded)
@@ -913,6 +1141,142 @@ Call ON-HISTORY-LOADED with BUFFER after the request completes."
             (setcdr existing data)
           (push (cons part-id data) result))))
     (nreverse result)))
+
+;;; Question and permission polling
+;;
+;; During prompt execution, we poll the HTTP server for pending questions
+;; and permissions.  Questions are an HTTP-only feature (ACP doesn't
+;; handle them).  Permissions from the main session are handled via the
+;; ACP `session/request_permission' handler, but sub-agent permissions
+;; are dropped by ACP (it only tracks sessions it created).  The poll
+;; catches those sub-agent permissions.
+
+(defvar-local opencode-session--seen-questions nil
+  "Set of question IDs already prompted during this session.")
+
+(defvar-local opencode-session--seen-permissions nil
+  "Set of permission IDs already prompted during this session.")
+
+(defun opencode-session--start-question-polling (connection buffer)
+  "Start polling for pending questions and permissions on CONNECTION.
+BUFFER is the session buffer where prompts will appear."
+  (opencode-session--stop-question-polling connection)
+  (setf (opencode-connection-question-timer connection)
+        (run-at-time 1 1
+                     #'opencode-session--poll-pending
+                     connection buffer)))
+
+(defun opencode-session--stop-question-polling (connection)
+  "Stop question and permission polling on CONNECTION."
+  (when-let ((timer (opencode-connection-question-timer connection)))
+    (cancel-timer timer)
+    (setf (opencode-connection-question-timer connection) nil)))
+
+(defun opencode-session--poll-pending (connection buffer)
+  "Poll for pending questions and permissions on CONNECTION.
+Prompts the user in BUFFER."
+  (when (and (buffer-live-p buffer)
+             (opencode-connection-alive-p connection))
+    (opencode-session--poll-questions connection buffer)
+    (opencode-session--poll-permissions connection buffer)))
+
+(defun opencode-session--poll-questions (connection buffer)
+  "Poll for pending questions on CONNECTION and prompt in BUFFER."
+  (opencode-client-questions
+   connection
+   :success (lambda (&rest args)
+              (let ((data (plist-get args :data)))
+                (when (buffer-live-p buffer)
+                  (with-current-buffer buffer
+                    (let ((questions (cond
+                                      ((vectorp data) (append data nil))
+                                      ((listp data) data)
+                                      (t nil))))
+                      (dolist (question questions)
+                        (let ((qid (alist-get 'id question)))
+                          (when (and qid
+                                     (not (member qid opencode-session--seen-questions)))
+                            (push qid opencode-session--seen-questions)
+                            ;; Defer to avoid blocking the HTTP callback
+                            (run-at-time 0 nil
+                                         (lambda ()
+                                           (when (buffer-live-p buffer)
+                                             (with-current-buffer buffer
+                                               (opencode-session--prompt-question
+                                                question)))))))))))))
+   :error (lambda (&rest _args) nil)))
+
+(declare-function opencode-client-permissions "emacs-opencode-client")
+(declare-function opencode-client-permission-reply "emacs-opencode-client")
+
+(defun opencode-session--poll-permissions (connection buffer)
+  "Poll for pending permissions on CONNECTION and prompt in BUFFER.
+Skips permissions already handled by the ACP `session/request_permission'
+handler (identified by matching tool call IDs)."
+  (opencode-client-permissions
+   connection
+   :success (lambda (&rest args)
+              (let ((data (plist-get args :data)))
+                (when (buffer-live-p buffer)
+                  (with-current-buffer buffer
+                    (let ((permissions (cond
+                                        ((vectorp data) (append data nil))
+                                        ((listp data) data)
+                                        (t nil))))
+                      (dolist (perm permissions)
+                        (let* ((pid (alist-get 'id perm))
+                               (tool (alist-get 'tool perm))
+                               (call-id (alist-get 'callID tool)))
+                          ;; Skip if already seen by this poll
+                          (when (and pid
+                                     (not (member pid opencode-session--seen-permissions)))
+                            ;; Skip if already handled by ACP permission handler
+                            ;; (dedup via tool call ID).  Only the ACP handler
+                            ;; writes to the seen table; the poll only reads.
+                            (unless (and call-id
+                                         (gethash call-id opencode-acp--seen-permission-ids))
+                              (push pid opencode-session--seen-permissions)
+                              ;; Defer to avoid blocking the HTTP callback
+                              (let ((perm-copy perm))
+                                (run-at-time 0 nil
+                                             (lambda ()
+                                               (when (buffer-live-p buffer)
+                                                 (with-current-buffer buffer
+                                                   (opencode-session--prompt-polled-permission
+                                                    connection perm-copy)))))))))))))))
+   :error (lambda (&rest _args) nil)))
+
+(defun opencode-session--prompt-polled-permission (connection perm)
+  "Prompt the user for permission PERM and reply via HTTP on CONNECTION."
+  (let* ((pid (alist-get 'id perm))
+         (permission-type (alist-get 'permission perm))
+         (metadata (alist-get 'metadata perm))
+         (tool (alist-get 'tool perm))
+         (call-id (alist-get 'callID tool))
+         ;; Build a descriptive prompt
+         (filepath (when (listp metadata) (alist-get 'filepath metadata)))
+         (prompt (format "OpenCode: %s%s (Allow once, Allow always, Deny): "
+                         (or permission-type "permission")
+                         (if filepath
+                             (format " [%s]" filepath)
+                           "")))
+         (choices '("Allow once" "Allow always" "Deny"))
+         (selection (condition-case nil
+                        (completing-read prompt choices nil t)
+                      (quit "Deny")))
+         (reply (cond
+                 ((string= selection "Allow always") "always")
+                 ((string= selection "Allow once") "allow")
+                 (t "reject"))))
+    ;; Send reply via HTTP
+    (opencode-client-permission-reply
+     connection
+     pid
+     reply
+     :success (lambda (&rest _args)
+                (message "OpenCode: permission %s — %s" pid reply))
+     :error (lambda (&rest _args)
+              (message "OpenCode: failed to reply to permission %s" pid)))))
 
 (provide 'emacs-opencode-session-mode)
 

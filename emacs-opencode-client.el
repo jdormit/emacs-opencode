@@ -5,9 +5,16 @@
 (require 'request)
 (require 'subr-x)
 (require 'emacs-opencode-connection)
-(require 'emacs-opencode-sse)
 
-(declare-function opencode--json-read "emacs-opencode-sse")
+(defun opencode--json-read ()
+  "Read JSON from the current buffer with JSON false mapped to nil."
+  (if (fboundp 'json-parse-buffer)
+      (json-parse-buffer :object-type 'alist
+                         :array-type 'list
+                         :null-object nil
+                         :false-object nil)
+    (let ((json-false nil))
+      (json-read))))
 
 (cl-defmethod opencode-request ((conn opencode-connection) method path &rest args &key data json parser headers timeout &allow-other-keys)
   "Send a raw HTTP request using CONN.
@@ -71,6 +78,15 @@ LIMIT restricts the number of returned messages when provided."
    :success success
    :error error))
 
+(cl-defmethod opencode-client-session-get ((conn opencode-connection) session-id &key success error)
+  "Fetch session metadata for SESSION-ID."
+  (opencode-request
+   conn
+   'GET
+   (format "/session/%s" session-id)
+   :success success
+   :error error))
+
 (cl-defmethod opencode-client-agents ((conn opencode-connection) &key success error)
   "Fetch available agents from the server."
   (opencode-request
@@ -95,6 +111,16 @@ LIMIT restricts the number of returned messages when provided."
    conn
    'GET
    "/command"
+   :success success
+   :error error))
+
+(cl-defmethod opencode-client-session-status ((conn opencode-connection) &key success error)
+  "Fetch session status map from the server.
+Returns a map of session-id to status info."
+  (opencode-request
+   conn
+   'GET
+   "/session/status"
    :success success
    :error error))
 
@@ -217,6 +243,36 @@ MESSAGE is sent when provided."
                       ((stringp answer) (vector answer))
                       (t (vector))))
                    items))))
+
+(cl-defmethod opencode-client-permissions ((conn opencode-connection) &key success error)
+  "Fetch pending permission requests from the server."
+  (opencode-request
+   conn
+   'GET
+   "/permission"
+   :success success
+   :error error))
+
+(cl-defmethod opencode-client-permission-reply ((conn opencode-connection) permission-id reply &key success error)
+  "Reply to permission PERMISSION-ID with REPLY.
+
+REPLY is a string: \"allow\", \"always\", or \"reject\"."
+  (opencode-request
+   conn
+   'POST
+   (format "/permission/%s/reply" permission-id)
+   :json `((reply . ,reply))
+   :success success
+   :error error))
+
+(cl-defmethod opencode-client-questions ((conn opencode-connection) &key success error)
+  "Fetch pending questions from the server."
+  (opencode-request
+   conn
+   'GET
+   "/question"
+   :success success
+   :error error))
 
 (cl-defmethod opencode-client-question-reply ((conn opencode-connection) request-id answers &key success error)
   "Reply to question REQUEST-ID with ANSWERS.

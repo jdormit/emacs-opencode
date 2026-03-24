@@ -24,15 +24,21 @@ amount of local state needed for a smooth editing experience.
     open or reuse a session buffer.
 - Connection lifecycle
   - A connection stores base URL, port, directory, and process handles.
-  - Server startup spawns the `opencode serve` process, waits for the ready log
-    line, then performs a health check before marking the connection ready.
+  - Server startup spawns the `opencode acp` process, performs a JSON-RPC
+    initialize handshake over stdio, then verifies the embedded HTTP server
+    via a health check before marking the connection ready.
 - Transport
-  - All HTTP requests flow through `opencode-request`, which builds URLs from
-    the connection base URL and applies auth headers/timeouts.
+  - Core operations (prompts, sessions, cancel, permissions) use ACP JSON-RPC
+    over stdio with newline-delimited JSON framing.
+  - Supplementary operations (providers, questions, shell commands, auth) use
+    HTTP requests through `opencode-request`, which builds URLs from the
+    connection base URL and applies auth headers/timeouts.
 - Streaming
-  - SSE uses a dedicated curl process and buffer, with a small parser state
-    machine that collects data lines and dispatches decoded JSON payloads.
-  - Large diff payloads are intentionally skipped to keep parsing fast.
+  - Streaming updates arrive as `session/update` JSON-RPC notifications over
+    the ACP stdio channel.  These are demuxed by variant and mapped to the
+    existing rendering infrastructure.
+  - Agent-to-client requests (permissions, file writes) are handled
+    synchronously over the same JSON-RPC channel.
 - Session UI
   - Session buffers are backed by model structs and maintain message parts,
     markers for the input region, and header rendering state.

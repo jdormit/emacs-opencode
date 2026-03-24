@@ -5,8 +5,11 @@
 
 (declare-function opencode-client-commands "emacs-opencode-client" (conn &key success error))
 (declare-function opencode-client-providers "emacs-opencode-client" (conn &key success error))
+(declare-function opencode-acp-start "emacs-opencode-acp" (directory port &optional ready-callback))
+(declare-function opencode-acp-stop "emacs-opencode-acp" (process))
 
 (cl-defstruct (opencode-connection (:constructor opencode-connection-create))
+  ;; HTTP server fields (for the embedded server in `opencode acp')
   base-url
   hostname
   port
@@ -14,14 +17,16 @@
   username
   password
   timeout
+  ;; Cached metadata
   agents
   agents-raw
   commands
   providers
   provider-catalog
+  ;; ACP process (JSON-RPC over stdio)
   process
-  sse-process
-  sse-state)
+  ;; Question polling timer (active during prompt execution)
+  question-timer)
 
 
 (defcustom opencode-server-host "127.0.0.1"
@@ -118,16 +123,6 @@ HOSTNAME and PORT override the default server config."
      :directory (file-name-as-directory (expand-file-name directory))
      :timeout 10)))
 
-(defun opencode-connection--maybe-ready (process output connection ready-callback)
-  "Process OUTPUT and call READY-CALLBACK when server is ready."
-  (when (and ready-callback
-             (not (process-get process 'opencode-ready)))
-    (when (string-match-p "opencode server listening on" output)
-      (process-put process 'opencode-ready t)
-      (funcall ready-callback process)
-      (opencode-connection-ensure-providers connection)
-      (opencode-connection-ensure-commands connection))))
-
 (defun opencode-connection-ensure-commands (connection &optional on-success on-error)
   "Ensure commands are fetched and cached for CONNECTION.
 
@@ -185,28 +180,23 @@ ON-SUCCESS is called with ITEMS when available. ON-ERROR is called on failure."
                    (message "OpenCode: failed to load providers"))))))))
 
 (defun opencode-connection-start (connection &optional ready-callback)
-  "Start an OpenCode server for CONNECTION.
+  "Start an OpenCode ACP subprocess for CONNECTION.
 
-READY-CALLBACK is called when the server reports readiness. Returns the
-updated CONNECTION."
-  (let* ((default-directory (opencode-connection-directory connection))
-          (hostname (opencode-connection-hostname connection))
-          (port (opencode-connection-port connection))
-          (process-environment (opencode-connection--process-environment
-                                opencode-server-environment))
-          (command (list (executable-find opencode-server-command) "serve"
-                         "--hostname" hostname
-                         "--port" (number-to-string port)))
-         (buffer (get-buffer-create (format " *opencode-server<%s>*" default-directory)))
-         (process (apply #'start-process "opencode-server" buffer command)))
-    (set-process-filter
-     process
-     (lambda (proc output)
-       (when (buffer-live-p buffer)
-         (with-current-buffer buffer
-           (goto-char (point-max))
-           (insert output)))
-       (opencode-connection--maybe-ready proc output connection ready-callback)))
+Spawns `opencode acp' with JSON-RPC over stdio.  The embedded HTTP server
+runs on the port stored in CONNECTION for lightweight polling.
+READY-CALLBACK is called with the process when the ACP initialize
+handshake succeeds.  Returns the updated CONNECTION."
+  (require 'emacs-opencode-acp)
+  (let* ((directory (opencode-connection-directory connection))
+         (port (opencode-connection-port connection))
+         (process (opencode-acp-start
+                   directory port
+                   (lambda (proc)
+                     (setf (opencode-connection-process connection) proc)
+                     (opencode-connection-ensure-providers connection)
+                     (opencode-connection-ensure-commands connection)
+                     (when ready-callback
+                       (funcall ready-callback proc))))))
     (setf (opencode-connection-process connection) process)
     connection))
 
@@ -216,13 +206,15 @@ updated CONNECTION."
     (process-live-p process)))
 
 (defun opencode-connection-stop (connection)
-  "Stop the OpenCode server associated with CONNECTION."
+  "Stop the OpenCode ACP process associated with CONNECTION."
+  (require 'emacs-opencode-acp)
+  ;; Stop question polling timer
+  (when-let ((timer (opencode-connection-question-timer connection)))
+    (cancel-timer timer)
+    (setf (opencode-connection-question-timer connection) nil))
+  ;; Stop the ACP process
   (when-let ((process (opencode-connection-process connection)))
-    (when (process-live-p process)
-      (delete-process process))
-    (when-let ((buffer (process-buffer process)))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))
+    (opencode-acp-stop process)
     (setf (opencode-connection-process connection) nil)))
 
 

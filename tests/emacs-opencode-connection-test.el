@@ -72,45 +72,6 @@
   (let ((conn (opencode-connection-create)))
     (should (null (opencode-connection-alive-p conn)))))
 
-;;; maybe-ready
-
-(ert-deftest test-opencode-connection/maybe-ready-matches ()
-  "Call ready callback when output contains the ready string."
-  (let* ((conn (opencode-connection-create))
-         (called nil)
-         (fake-process (start-process "test-proc" nil "true")))
-    (unwind-protect
-        (progn
-          ;; Stub out the provider/command fetches that fire on ready
-          (cl-letf (((symbol-function 'opencode-connection-ensure-providers)
-                     (lambda (&rest _) nil))
-                    ((symbol-function 'opencode-connection-ensure-commands)
-                     (lambda (&rest _) nil)))
-            (opencode-connection--maybe-ready
-             fake-process
-             "some output opencode server listening on :4096"
-             conn
-             (lambda (_proc) (setq called t))))
-          (should called))
-      (when (process-live-p fake-process)
-        (delete-process fake-process)))))
-
-(ert-deftest test-opencode-connection/maybe-ready-no-match ()
-  "Don't call callback when output doesn't contain ready string."
-  (let* ((conn (opencode-connection-create))
-         (called nil)
-         (fake-process (start-process "test-proc" nil "true")))
-    (unwind-protect
-        (progn
-          (opencode-connection--maybe-ready
-           fake-process
-           "some other output"
-           conn
-           (lambda (_proc) (setq called t)))
-          (should (null called)))
-      (when (process-live-p fake-process)
-        (delete-process fake-process)))))
-
 (provide 'emacs-opencode-connection-test)
 
 ;;; emacs-opencode-connection-test.el ends here

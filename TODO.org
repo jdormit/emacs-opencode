@@ -19,13 +19,20 @@ E.g. "OpenCode wants to rg foobar .*" or "OpenCode wants to foo/bar/baz.txt". Wh
 * TODO Session management commands
 - Load session, fork, delete, rename.
 
-* IN PROGRESS Address poor performance of SSE buffer/event dispatch
-- already implemented: we now only JSON-parse events with registered handlers
-- there is probably still more room to improve here
-- further improvements made:
-  - we totally skip processing events without registered handlers now
-  - made handler run sync by default instead of queueing via run-at-time 0
-  - switched to url-retrieve request.el backend instead of curl, which seemed to speed up localhost network calls
+* DONE Address poor performance of SSE buffer/event dispatch
+CLOSED: [2026-03-23 Sun]
+Replaced the SSE-based architecture entirely with ACP (Agent Client Protocol)
+over stdio.  Core operations (prompts, streaming, permissions, cancel) use
+JSON-RPC over newline-delimited JSON via the =opencode acp= child process.
+Supplementary operations (questions, session metadata, shell commands, auth)
+use HTTP against the embedded server.  SSE module deleted entirely.
+* TODO Display sub-agent tool calls in the session buffer
+The ACP event stream only forwards events for sessions registered in its
+session manager.  Sub-agent sessions are created server-side and never
+registered, so their =message.part.updated= / =message.part.delta= events
+are silently dropped.  Sub-agent permissions are handled via HTTP polling,
+but tool call visibility requires a different approach (e.g., polling
+sub-agent messages once we know the session ID from the task tool metadata).
 * TODO Add newline before "block level" message parts if they are the first part of the message and there isn't a blank line above
 * TODO Render markdown tables with aligned columns
 Rewrite table text at render time: detect consecutive `|...|` lines, measure max column widths, and pad cells.

@@ -35,11 +35,11 @@ emacs -Q -L . -L ~/.emacs.d/straight/build/request -batch -L tests -l tests/run-
 emacs -Q -L . -L ~/.emacs.d/straight/build/request -batch -L tests -l tests/emacs-opencode-sse-test.el -f ert-run-tests-batch-and-exit
 
 # Run tests matching a pattern
-emacs -Q -L . -L ~/.emacs.d/straight/build/request -batch -L tests -l tests/run-tests.el --eval '(ert-run-tests-batch-and-exit "test-opencode-sse")'
+emacs -Q -L . -L ~/.emacs.d/straight/build/request -batch -L tests -l tests/run-tests.el --eval '(ert-run-tests-batch-and-exit "test-opencode-acp")'
 ```
 
 Tests live in `tests/` with one file per source module (e.g.,
-`tests/emacs-opencode-sse-test.el` tests `emacs-opencode-sse.el`).
+`tests/emacs-opencode-acp-test.el` tests `emacs-opencode-acp.el`).
 `tests/run-tests.el` loads all test files for batch execution.
 
 `.dir-locals.el` adds the repo root to `load-path` so `require` works
@@ -51,8 +51,7 @@ None found at the time of writing.
 
 ## External Dependencies
 
-- **`request`** (MELPA) — the only external Emacs package. Used in the client module.
-- **`curl`** — required on `$PATH` for SSE streaming.
+- **`request`** (MELPA) — the only external Emacs package. Used in the HTTP client module.
 - Built-ins used: `cl-lib`, `subr-x`, `json`, `project`.
 
 ## Code Style Guidelines
@@ -140,17 +139,23 @@ The codebase is organized in layers:
 
 - **Entry and commands** — top-level interactive commands and the connection
   registry (directory → connection hash-table).
-- **Connection lifecycle** — server process spawn, health check, port allocation,
-  shutdown, and the `opencode-connection` struct.
+- **Connection lifecycle** — ACP process spawn, JSON-RPC initialize handshake,
+  HTTP health check, port allocation, shutdown, and the `opencode-connection`
+  struct.
+- **ACP transport** — JSON-RPC 2.0 over newline-delimited JSON (ndjson) via
+  stdin/stdout of the `opencode acp` child process.  Handles requests,
+  responses, notifications, and agent-to-client requests.
+- **ACP handlers** — maps `session/update` notification variants to the
+  rendering layer.  Handles agent-to-client requests for permissions and
+  file operations.
 - **HTTP client** — central `opencode-request` method plus per-endpoint API
-  wrappers using `cl-defmethod` dispatching on the connection type.
-- **SSE streaming** — curl-based SSE client with a stateful line parser, handler
-  registry, and `opencode-sse-define-handler` macro for event dispatch.
+  wrappers for supplementary operations (providers, questions, shell commands,
+  auth, session metadata).
 - **Session data models** — pure `cl-defstruct` definitions for sessions,
   messages, and message parts. No logic or side effects.
 - **Session UI** — a `define-derived-mode` major mode with marker-delimited
   input area, incremental message rendering, header-line with spinner, agent/model
-  selection, completion-at-point, and SSE event handlers.
+  selection, and completion-at-point.
 
 Circular dependencies between session sub-modules are broken by a shared
 variables module (`emacs-opencode-session-vars`) and `declare-function`.
