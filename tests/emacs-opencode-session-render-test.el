@@ -451,6 +451,41 @@
     (should (stringp text))
     (should (string-match-p "retrying" text))))
 
+;;; reasoning visibility
+
+(ert-deftest test-opencode-render/reasoning-hidden-when-off ()
+  "Reasoning parts render to nil when reasoning display is off."
+  (let ((opencode-session-show-reasoning nil)
+        (opencode-session--show-reasoning nil)
+        (msg (opencode-message-create :role "assistant"))
+        (part (opencode-message-part-create
+               :type "reasoning"
+               :text "let me think")))
+    (should (null (opencode-session--render-message-part msg part)))))
+
+(ert-deftest test-opencode-render/reasoning-shown-when-on ()
+  "Reasoning parts render text when reasoning display is on."
+  (let ((opencode-session-show-reasoning nil)
+        (opencode-session--show-reasoning t)
+        (msg (opencode-message-create :role "assistant"))
+        (part (opencode-message-part-create
+               :type "reasoning"
+               :text "let me think")))
+    (let ((result (opencode-session--render-message-part msg part)))
+      (should (stringp result))
+      (should (string-match-p "Thinking:" result))
+      (should (string-match-p "let me think" result)))))
+
+(ert-deftest test-opencode-render/reasoning-respects-buffer-local-override ()
+  "Buffer-local override wins over the global default."
+  (let ((opencode-session-show-reasoning t)
+        (opencode-session--show-reasoning nil)
+        (msg (opencode-message-create :role "assistant"))
+        (part (opencode-message-part-create
+               :type "reasoning"
+               :text "let me think")))
+    (should (null (opencode-session--render-message-part msg part)))))
+
 (provide 'emacs-opencode-session-render-test)
 
 ;;; emacs-opencode-session-render-test.el ends here

@@ -570,7 +570,7 @@ properties and the user prefix indicator."
           (let ((ptype (if (string= role "user") "user-text" "assistant-text")))
             (propertize text 'opencode-part-type ptype)))))
      ((string= part-type "reasoning")
-      (when opencode-session-show-reasoning
+      (when opencode-session--show-reasoning
         (let ((text (or (opencode-message-part-text part) "")))
           (unless (string-empty-p (string-trim text))
             (propertize (concat "Thinking:\n" text)

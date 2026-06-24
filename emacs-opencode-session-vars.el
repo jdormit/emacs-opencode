@@ -47,6 +47,12 @@ The authoritative input region is from
 (defvar-local opencode-session--variant nil
   "Selected model variant for the current session buffer.")
 
+(defvar-local opencode-session--show-reasoning nil
+  "When non-nil, show reasoning/thinking blocks in this session buffer.
+Initialized from `opencode-session-show-reasoning' when the buffer
+enters `opencode-session-mode', and toggled per-buffer by
+`opencode-session-toggle-reasoning'.")
+
 (defvar-local opencode-session--expanded-collapse-syms nil
   "Hash table of invisibility symbols the user has manually expanded.
 Keys are symbols of the form `opencode-collapse-<part-id>'.

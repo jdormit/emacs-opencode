@@ -63,6 +63,7 @@ Each function receives SESSION and INPUT as arguments.")
     (define-key map (kbd "C-c C-]") #'opencode-session-next-variant)
     (define-key map (kbd "C-c C-[") #'opencode-session-previous-variant)
     (define-key map (kbd "C-c C-o") #'opencode-command)
+    (define-key map (kbd "C-c C-t") #'opencode-session-toggle-reasoning)
     (define-key map (kbd "RET") #'newline)
     (define-key map (kbd "C-<tab>") #'completion-at-point)
     (define-key map [remap self-insert-command] #'opencode-session-self-insert)
@@ -90,6 +91,7 @@ Each function receives SESSION and INPUT as arguments.")
   (setq-local opencode-session--provider-id nil)
   (setq-local opencode-session--model-id nil)
   (setq-local opencode-session--variant nil)
+  (setq-local opencode-session--show-reasoning opencode-session-show-reasoning)
   (opencode-session--ensure-markers)
   (add-hook 'completion-at-point-functions
             #'opencode-session--completion-at-point
@@ -170,6 +172,29 @@ connection, and then call CALLBACK with the new connection."
     (goto-char (point-max))
     (insert input))
   (opencode-session--goto-input))
+
+;;;###autoload
+(defun opencode-session-toggle-reasoning ()
+  "Toggle display of reasoning/thinking blocks in the session buffer.
+
+The toggle is buffer-local: it flips
+`opencode-session--show-reasoning' and re-renders the buffer so
+existing reasoning blocks appear or disappear immediately.  Typed
+input is preserved across the re-render."
+  (interactive)
+  (unless (derived-mode-p 'opencode-session-mode)
+    (error "Not in an OpenCode session buffer"))
+  (setq-local opencode-session--show-reasoning
+              (not opencode-session--show-reasoning))
+  (let ((input (opencode-session--current-input)))
+    (opencode-session--render-buffer)
+    (unless (string-empty-p input)
+      (goto-char (point-max))
+      (let ((inhibit-read-only t))
+        (insert input)))
+    (opencode-session--goto-input))
+  (message "OpenCode: thinking blocks %s"
+           (if opencode-session--show-reasoning "shown" "hidden")))
 
 (defun opencode-session-send-input ()
   "Send the current input region content."
@@ -523,12 +548,8 @@ PREVIOUS-NAME is the previous buffer name to compare against."
 
 ;;; Rendering orchestration
 
-(defun opencode-session--render-buffer ()
-  "Render the session buffer contents."
-  (let ((inhibit-read-only t))
-    (erase-buffer))
-  ;; The retry banner markers point into the now-erased buffer; reset
-  ;; them so the next render decides afresh whether to insert one.
+(defun opencode-session--reset-render-markers ()
+  "Reset markers invalidated by a full buffer re-render."
   (when (markerp opencode-session--retry-banner-start)
     (set-marker opencode-session--retry-banner-start nil))
   (when (markerp opencode-session--retry-banner-end)
@@ -536,10 +557,26 @@ PREVIOUS-NAME is the previous buffer name to compare against."
   (setq-local opencode-session--retry-banner-start nil)
   (setq-local opencode-session--retry-banner-end nil)
   (opencode-session--ensure-markers)
+  (set-marker opencode-session--input-start-marker (point-min))
+  (set-marker opencode-session--input-marker (point-min))
+  (dolist (message opencode-session--messages)
+    (when (markerp (opencode-message-start-marker message))
+      (set-marker (opencode-message-start-marker message) nil))
+    (when (markerp (opencode-message-end-marker message))
+      (set-marker (opencode-message-end-marker message) nil))
+    (setf (opencode-message-start-marker message) nil)
+    (setf (opencode-message-end-marker message) nil)))
+
+(defun opencode-session--render-buffer ()
+  "Render the session buffer contents."
+  (let ((inhibit-read-only t))
+    (erase-buffer))
+  (opencode-session--reset-render-markers)
   (opencode-session--render-header)
   (opencode-session--render-messages)
   (opencode-session--ensure-input-region)
-  (opencode-session--render-retry-banner))
+  (opencode-session--render-retry-banner)
+  (font-lock-flush))
 
 ;;; Message state management
 
@@ -619,10 +656,14 @@ PREVIOUS-NAME is the previous buffer name to compare against."
              (data (opencode-session--message-part-from-info part))
              (previous (cdr entry)))
         (setcdr entry data)
-        (when (and delta (opencode-message-part-p previous)
-                   (string= (opencode-message-part-type data) "text"))
+        (when (and (opencode-message-part-p previous)
+                   (member (opencode-message-part-type data)
+                           '("text" "reasoning")))
           (setf (opencode-message-part-text data)
-                (concat (opencode-message-part-text previous) delta)))
+                (if delta
+                    (concat (opencode-message-part-text previous) delta)
+                  (or (opencode-message-part-text data)
+                      (opencode-message-part-text previous)))))
         (if existing
             (setf (opencode-message-parts message)
                   (cl-subst entry existing (opencode-message-parts message)))

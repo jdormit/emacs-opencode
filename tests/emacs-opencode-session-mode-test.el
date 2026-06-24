@@ -506,6 +506,180 @@ banner, causing the prompt overlay to render before the banner."
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
+(ert-deftest test-opencode-session-mode/toggle-reasoning-flips-state ()
+  "Toggling reasoning flips the buffer-local visibility flag."
+  (with-temp-buffer
+    (opencode-session-mode)
+    (setq-local opencode-session--session
+                (opencode-session-create :id "test-session"))
+    (opencode-session--ensure-markers)
+    (opencode-session--ensure-input-region)
+    (setq-local opencode-session--show-reasoning nil)
+    (opencode-session-toggle-reasoning)
+    (should (eq opencode-session--show-reasoning t))
+    (opencode-session-toggle-reasoning)
+    (should (eq opencode-session--show-reasoning nil))))
+
+(ert-deftest test-opencode-session-mode/toggle-reasoning-preserves-input ()
+  "Toggling reasoning after render does not pull transcript into input."
+  (with-temp-buffer
+    (opencode-session-mode)
+    (setq-local opencode-session--session
+                (opencode-session-create :id "test-session"))
+    (opencode-session--ensure-markers)
+    (opencode-session--ensure-input-region)
+    (let ((message (opencode-message-create
+                    :id "m1"
+                    :role "assistant"
+                    :parts (list
+                            (cons "p1"
+                                  (opencode-message-part-create
+                                   :id "p1"
+                                   :type "text"
+                                   :text "before tool"))
+                            (cons "p2"
+                                  (opencode-message-part-create
+                                   :id "p2"
+                                   :type "tool"
+                                   :tool "grep"
+                                   :state '((status . "completed")
+                                            (input . ((pattern . "needle")))
+                                            (metadata . ((matches . 1))))))
+                            (cons "p3"
+                                  (opencode-message-part-create
+                                   :id "p3"
+                                   :type "reasoning"
+                                   :text "deep thoughts"))))))
+      (setq-local opencode-session--messages (list message))
+      (opencode-session--render-buffer))
+    (goto-char (point-max))
+    (insert "typed input")
+    (setq-local opencode-session--show-reasoning nil)
+    (opencode-session-toggle-reasoning)
+    (should (eq opencode-session--show-reasoning t))
+    (should (equal (opencode-session--current-input) "typed input"))
+    (should (string-match-p
+             "deep thoughts"
+             (buffer-substring-no-properties
+              (point-min)
+              (marker-position opencode-session--input-start-marker))))))
+
+(ert-deftest test-opencode-session-mode/toggle-reasoning-keeps-message-markers-before-input ()
+  "Repeated reasoning toggles keep message regions before the input marker."
+  (with-temp-buffer
+    (opencode-session-mode)
+    (setq-local opencode-session--session
+                (opencode-session-create :id "test-session"))
+    (opencode-session--ensure-markers)
+    (opencode-session--ensure-input-region)
+    (let ((first (opencode-message-create
+                  :id "m1"
+                  :role "assistant"
+                  :parts (list (cons "p1"
+                                     (opencode-message-part-create
+                                      :id "p1"
+                                      :type "text"
+                                      :text "first response")))))
+          (second (opencode-message-create
+                   :id "m2"
+                   :role "assistant"
+                   :parts (list
+                           (cons "p2"
+                                 (opencode-message-part-create
+                                  :id "p2"
+                                  :type "tool"
+                                  :tool "read"
+                                  :state '((status . "completed")
+                                           (input . ((filePath . "/tmp/file"))))))
+                           (cons "p3"
+                                 (opencode-message-part-create
+                                  :id "p3"
+                                  :type "reasoning"
+                                  :text "thoughts"))))))
+      (setq-local opencode-session--messages (list first second))
+      (opencode-session--render-buffer)
+      (goto-char (point-max))
+      (insert "typed input")
+      (setq-local opencode-session--show-reasoning nil)
+      (opencode-session-toggle-reasoning)
+      (opencode-session-toggle-reasoning)
+      (let ((input-start (marker-position opencode-session--input-start-marker)))
+        (should (equal (opencode-session--current-input) "typed input"))
+        (dolist (message opencode-session--messages)
+          (should (< (marker-position (opencode-message-start-marker message))
+                     (marker-position (opencode-message-end-marker message))))
+          (should (<= (marker-position (opencode-message-end-marker message))
+                      input-start)))
+        (should (string-match-p
+                 "first response"
+                 (buffer-substring-no-properties (point-min) input-start)))
+        (should (string-match-p
+                 "Read"
+                 (buffer-substring-no-properties (point-min) input-start)))))))
+
+(ert-deftest test-opencode-session-mode/toggle-reasoning-hides-on-second-toggle ()
+  "Toggling reasoning off and back on restores reasoning text."
+  (with-temp-buffer
+    (opencode-session-mode)
+    (setq-local opencode-session--session
+                (opencode-session-create :id "test-session"))
+    (opencode-session--ensure-markers)
+    (opencode-session--ensure-input-region)
+    (let ((message (opencode-message-create
+                    :id "m1"
+                    :role "assistant"
+                    :parts (list (cons "p1"
+                                       (opencode-message-part-create
+                                        :id "p1"
+                                        :type "reasoning"
+                                        :text "deep thoughts"))))))
+      (setq-local opencode-session--messages (list message)))
+    (setq-local opencode-session--show-reasoning nil)
+    (opencode-session-toggle-reasoning)
+    (opencode-session-toggle-reasoning)
+    (should (eq opencode-session--show-reasoning nil))
+    (should-not (string-match-p
+                 "deep thoughts"
+                 (buffer-substring-no-properties (point-min) (point-max))))
+    (opencode-session-toggle-reasoning)
+    (should (eq opencode-session--show-reasoning t))
+    (should (string-match-p
+             "deep thoughts"
+             (buffer-substring-no-properties (point-min) (point-max))))))
+
+(ert-deftest test-opencode-session-mode/reasoning-update-while-hidden-is-retained ()
+  "Reasoning text updated while hidden reappears when toggled back on."
+  (with-temp-buffer
+    (opencode-session-mode)
+    (setq-local opencode-session--session
+                (opencode-session-create :id "test-session"))
+    (opencode-session--ensure-markers)
+    (opencode-session--ensure-input-region)
+    (let ((message (opencode-message-create
+                    :id "m1"
+                    :role "assistant"
+                    :parts (list (cons "p1"
+                                       (opencode-message-part-create
+                                        :id "p1"
+                                        :session-id "test-session"
+                                        :message-id "m1"
+                                        :type "reasoning"
+                                        :text "first"))))))
+      (setq-local opencode-session--messages (list message))
+      (setq-local opencode-session--show-reasoning t)
+      (opencode-session--render-buffer)
+      (opencode-session-toggle-reasoning)
+      (opencode-session--update-message-part
+       '((id . "p1")
+         (sessionID . "test-session")
+         (messageID . "m1")
+         (type . "reasoning"))
+       " second")
+      (opencode-session-toggle-reasoning)
+      (should (string-match-p
+               "first second"
+               (buffer-substring-no-properties (point-min) (point-max)))))))
+
 (provide 'emacs-opencode-session-mode-test)
 
 ;;; emacs-opencode-session-mode-test.el ends here
