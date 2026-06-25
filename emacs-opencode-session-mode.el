@@ -64,6 +64,7 @@ Each function receives SESSION and INPUT as arguments.")
     (define-key map (kbd "C-c C-[") #'opencode-session-previous-variant)
     (define-key map (kbd "C-c C-o") #'opencode-command)
     (define-key map (kbd "C-c C-t") #'opencode-session-toggle-reasoning)
+    (define-key map (kbd "C-c C-f") #'opencode-session-fork)
     (define-key map (kbd "RET") #'newline)
     (define-key map (kbd "C-<tab>") #'completion-at-point)
     (define-key map [remap self-insert-command] #'opencode-session-self-insert)
@@ -195,6 +196,38 @@ input is preserved across the re-render."
     (opencode-session--goto-input))
   (message "OpenCode: thinking blocks %s"
            (if opencode-session--show-reasoning "shown" "hidden")))
+
+;;;###autoload
+(defun opencode-session-fork ()
+  "Fork the current OpenCode session.
+
+When point is in a rendered transcript message, fork before the user message
+for that exchange.  When point is in the input area or outside any rendered
+message, fork the whole session."
+  (interactive)
+  (unless (derived-mode-p 'opencode-session-mode)
+    (error "Not in an OpenCode session buffer"))
+  (unless opencode-session--session
+    (error "OpenCode session is not connected"))
+  (let ((buffer (current-buffer))
+        (source-session opencode-session--session)
+        (message-id (opencode-session--fork-message-id-at-point)))
+    (opencode-session--ensure-connection
+     (lambda (connection)
+       (when (buffer-live-p buffer)
+         (opencode-client-session-fork
+          connection
+          (opencode-session-id source-session)
+          :message-id message-id
+          :success (lambda (&rest args)
+                     (let* ((data (plist-get args :data))
+                            (session (opencode-session--session-from-info data)))
+                       (opencode-session-open session connection)
+                       (message "OpenCode session forked")))
+          :error (lambda (&rest args)
+                   (let ((detail (opencode-client-format-error args)))
+                     (error "Failed to fork OpenCode session%s"
+                            (if detail (format " (%s)" detail) ""))))))))))
 
 (defun opencode-session-send-input ()
   "Send the current input region content."
@@ -528,6 +561,60 @@ Falls back to a normal prompt when INPUT does not match an available command."
                     (opencode-session-id session)
                     "session")
               title))))
+
+(defun opencode-session--session-from-info (info)
+  "Create a session object from INFO."
+  (let* ((time (alist-get 'time info))
+         (created (alist-get 'created time))
+         (updated (alist-get 'updated time)))
+    (opencode-session-create
+     :id (alist-get 'id info)
+     :slug (alist-get 'slug info)
+     :version (alist-get 'version info)
+     :project-id (alist-get 'projectID info)
+     :directory (alist-get 'directory info)
+     :title (alist-get 'title info)
+     :time-created created
+     :time-updated updated
+     :summary (alist-get 'summary info)
+     :info info)))
+
+(defun opencode-session--message-at-point ()
+  "Return the rendered message at point, if any."
+  (let ((pos (point))
+        result)
+    (dolist (message opencode-session--messages result)
+      (let ((start (opencode-message-start-marker message))
+            (end (opencode-message-end-marker message)))
+        (when (and (not result)
+                   (markerp start)
+                   (markerp end)
+                   (marker-position start)
+                   (marker-position end)
+                   (<= (marker-position start) pos)
+                   (< pos (marker-position end)))
+          (setq result message))))))
+
+(defun opencode-session--previous-user-message (message)
+  "Return the nearest user message before MESSAGE."
+  (let ((previous nil)
+        (done nil))
+    (dolist (candidate opencode-session--messages previous)
+      (cond
+       ((eq candidate message)
+        (setq done t))
+       ((not done)
+        (when (string= (or (opencode-message-role candidate) "") "user")
+          (setq previous candidate)))))))
+
+(defun opencode-session--fork-message-id-at-point ()
+  "Return the message ID to fork before at point, or nil for full-session fork."
+  (when-let* ((message (opencode-session--message-at-point)))
+    (pcase (opencode-message-role message)
+      ("user" (opencode-message-id message))
+      ("assistant" (or (opencode-message-parent-id message)
+                       (when-let* ((user (opencode-session--previous-user-message message)))
+                         (opencode-message-id user)))))))
 
 (defun opencode-session--register-buffer (session buffer)
   "Register BUFFER for SESSION."

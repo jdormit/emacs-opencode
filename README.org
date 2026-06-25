@@ -65,6 +65,10 @@ They support:
   open its child session.
 - Reasoning/thinking blocks are hidden by default and can be toggled per buffer
   with =C-c C-t= when the OpenCode server has reasoning parts for the session.
+- Fork a session with =C-c C-f=. When point is on a user message, the new
+  session starts before that message; when point is on an assistant message, it
+  starts before the user message that prompted that response. When point is in
+  the input area, the whole session is forked.
 - Inline handling for OpenCode permission requests and questions via the
   minibuffer.
 
@@ -105,6 +109,7 @@ All commands auto-detect the current project root. Use a prefix argument
 | =C-c C-[=   | Previous variant                       |
 | =C-c C-o=   | Run a slash command                    |
 | =C-c C-t=   | Toggle reasoning/thinking blocks       |
+| =C-c C-f=   | Fork session                           |
 | =C-c C-r=   | Refresh agents                         |
 | =C-<tab>=   | Completion-at-point (slash commands)   |
 

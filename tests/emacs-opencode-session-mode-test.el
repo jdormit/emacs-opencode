@@ -318,6 +318,48 @@
     (insert "email@expl")
     (should (null (opencode-session--agent-completion-bounds)))))
 
+;;; fork-message-id-at-point
+
+(ert-deftest test-opencode-session-mode/fork-id-on-user-message ()
+  "Forking from a user message uses that message ID."
+  (with-temp-buffer
+    (opencode-session-mode)
+    (setq-local opencode-session--session
+                (opencode-session-create :id "test-session"))
+    (let ((user (opencode-message-create :id "u1" :role "user" :text "prompt"))
+          (assistant (opencode-message-create :id "a1" :role "assistant"
+                                             :parent-id "u1" :text "answer")))
+      (setq-local opencode-session--messages (list user assistant))
+      (opencode-session--render-buffer)
+      (goto-char (marker-position (opencode-message-start-marker user)))
+      (should (equal (opencode-session--fork-message-id-at-point) "u1")))))
+
+(ert-deftest test-opencode-session-mode/fork-id-on-assistant-message ()
+  "Forking from an assistant message uses its parent user message ID."
+  (with-temp-buffer
+    (opencode-session-mode)
+    (setq-local opencode-session--session
+                (opencode-session-create :id "test-session"))
+    (let ((user (opencode-message-create :id "u1" :role "user" :text "prompt"))
+          (assistant (opencode-message-create :id "a1" :role "assistant"
+                                             :parent-id "u1" :text "answer")))
+      (setq-local opencode-session--messages (list user assistant))
+      (opencode-session--render-buffer)
+      (goto-char (marker-position (opencode-message-start-marker assistant)))
+      (should (equal (opencode-session--fork-message-id-at-point) "u1")))))
+
+(ert-deftest test-opencode-session-mode/fork-id-in-input-area-is-nil ()
+  "Forking from the input area omits MESSAGE-ID for a whole-session fork."
+  (with-temp-buffer
+    (opencode-session-mode)
+    (setq-local opencode-session--session
+                (opencode-session-create :id "test-session"))
+    (let ((user (opencode-message-create :id "u1" :role "user" :text "prompt")))
+      (setq-local opencode-session--messages (list user))
+      (opencode-session--render-buffer)
+      (goto-char (point-max))
+      (should (null (opencode-session--fork-message-id-at-point))))))
+
 (ert-deftest test-opencode-session-mode/retry-banner-renders-above-prompt ()
   "Retry banner inserts above the prompt and updates markers correctly.
 

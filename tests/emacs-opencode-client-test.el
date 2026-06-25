@@ -131,6 +131,26 @@ last `request' call made during BODY."
       (should (equal (plist-get args :params) '(("limit" . 5))))
       (should (null (plist-get args :data))))))
 
+;;; session-fork
+
+(ert-deftest test-opencode-client/session-fork-without-message-sends-no-body ()
+  "Forking a whole session posts no request body."
+  (let ((conn (opencode-client-test--connection "/tmp/project/")))
+    (opencode-client-test--with-captured-request url args
+      (opencode-client-session-fork conn "ses_1" :success #'ignore :error #'ignore)
+      (should (equal url "http://127.0.0.1:4096/session/ses_1/fork"))
+      (should (equal (plist-get args :type) "POST"))
+      (should (null (plist-get args :data))))))
+
+(ert-deftest test-opencode-client/session-fork-with-message-sends-message-id ()
+  "Forking at a message sends MESSAGE-ID in the JSON body."
+  (let ((conn (opencode-client-test--connection "/tmp/project/")))
+    (opencode-client-test--with-captured-request _url args
+      (opencode-client-session-fork conn "ses_1" :message-id "msg_1"
+                                    :success #'ignore :error #'ignore)
+      (should (equal (plist-get args :data)
+                     (json-encode '((messageID . "msg_1"))))))))
+
 ;;; format-error
 
 (ert-deftest test-opencode-client/format-error-status-and-tag ()

@@ -117,6 +117,19 @@ LIMIT restricts the number of returned messages when provided."
    'GET
    (format "/session/%s/message" session-id)
    :params (when limit `(("limit" . ,limit)))
+    :success success
+    :error error))
+
+(cl-defmethod opencode-client-session-fork ((conn opencode-connection) session-id &key message-id success error)
+  "Fork SESSION-ID.
+
+When MESSAGE-ID is provided, fork the session before that message.  When
+MESSAGE-ID is nil, fork the whole session."
+  (opencode-request
+   conn
+   'POST
+   (format "/session/%s/fork" session-id)
+   :json (when message-id `((messageID . ,message-id)))
    :success success
    :error error))
 
