@@ -233,6 +233,19 @@
     (should (string-match-p "\\[✓\\] first" result))
     (should (string-match-p "\\[ \\] second" result))))
 
+(ert-deftest test-opencode-render/compaction-part ()
+  "Render compaction parts as boundary markers."
+  (let* ((part (opencode-message-part-create
+                :id "p1"
+                :type "compaction"
+                :auto nil
+                :time-end t))
+         (result (opencode-session--render-message-part
+                  (opencode-message-create :id "m1" :role "user")
+                  part)))
+    (should (string-match-p "Session compacted" result))
+    (should (string-match-p "no longer sent verbatim" result))))
+
 ;;; tool-extract-todos
 
 (ert-deftest test-opencode-render/extract-todos-from-input ()

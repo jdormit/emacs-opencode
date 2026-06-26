@@ -65,6 +65,9 @@ They support:
   open its child session.
 - Reasoning/thinking blocks are hidden by default and can be toggled per buffer
   with =C-c C-t= when the OpenCode server has reasoning parts for the session.
+- Compact a session on demand with =C-c C-x=. Compaction keeps the transcript
+  visible in the buffer and inserts a boundary marker showing where earlier
+  messages were summarized for future model context.
 - Fork a session with =C-c C-f=. When point is on a user message, the new
   session starts before that message; when point is on an assistant message, it
   starts before the user message that prompted that response. When point is in
@@ -109,6 +112,7 @@ All commands auto-detect the current project root. Use a prefix argument
 | =C-c C-[=   | Previous variant                       |
 | =C-c C-o=   | Run a slash command                    |
 | =C-c C-t=   | Toggle reasoning/thinking blocks       |
+| =C-c C-x=   | Compact session                        |
 | =C-c C-f=   | Fork session                           |
 | =C-c C-r=   | Refresh agents                         |
 | =C-<tab>=   | Completion-at-point (slash commands)   |
@@ -194,8 +198,8 @@ SSE and diagnostics options:
 | =opencode-sse-profile-slow-gap-ring-size=     | =200=         | Number of slow gap records to keep       |
 
 Faces (=opencode-session-user-face=, =opencode-session-assistant-face=,
-=opencode-session-tool-face=, etc.) can be customized via =M-x customize-group
-RET emacs-opencode=.
+=opencode-session-tool-face=, =opencode-session-compaction-face=, etc.) can be
+customized via =M-x customize-group RET emacs-opencode=.
 
 * Deep Emacs Integration
 

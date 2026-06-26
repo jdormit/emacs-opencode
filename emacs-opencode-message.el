@@ -19,7 +19,10 @@
   cost
   tokens
   tool
-  state)
+  state
+  auto
+  overflow
+  tail-start-id)
 
 (cl-defstruct (opencode-message (:constructor opencode-message-create))
   "Structured representation of an OpenCode message."

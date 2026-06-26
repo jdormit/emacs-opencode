@@ -106,6 +106,21 @@
     (should (equal (opencode-message-part-tool part) "bash"))
     (should (equal (opencode-message-part-time-start part) "2024-01-01"))))
 
+(ert-deftest test-opencode-session-mode/message-part-from-compaction-info ()
+  "Create a compaction message part from an info alist."
+  (let ((part (opencode-session--message-part-from-info
+               '((id . "p1")
+                 (sessionID . "s1")
+                 (messageID . "m1")
+                 (type . "compaction")
+                 (auto . t)
+                 (overflow . t)
+                 (tail_start_id . "m-tail")))))
+    (should (equal (opencode-message-part-type part) "compaction"))
+    (should (eq (opencode-message-part-auto part) t))
+    (should (eq (opencode-message-part-overflow part) t))
+    (should (equal (opencode-message-part-tail-start-id part) "m-tail"))))
+
 ;;; command-items
 
 (ert-deftest test-opencode-session-mode/command-items-vector ()
@@ -188,6 +203,28 @@
   (let ((result (opencode-session--classify-input "hello !world")))
     (should (eq (car result) 'message))
     (should (equal (cdr result) "hello !world"))))
+
+;;; compact command
+
+(ert-deftest test-opencode-session-mode/compact-sends-active-model ()
+  "The compact command sends the current session and active model."
+  (with-temp-buffer
+    (opencode-session-mode)
+    (setq-local opencode-session--session (opencode-session-create :id "s1"))
+    (setq-local opencode-session--provider-id "anthropic")
+    (setq-local opencode-session--model-id "claude")
+    (let (sent-connection sent-session sent-model)
+      (cl-letf (((symbol-function 'opencode-session--ensure-connection)
+                 (lambda (callback) (funcall callback 'conn)))
+                ((symbol-function 'opencode-client-session-compact)
+                 (lambda (connection session-id model &rest _args)
+                   (setq sent-connection connection
+                         sent-session session-id
+                         sent-model model))))
+        (opencode-session-compact))
+      (should (eq sent-connection 'conn))
+      (should (equal sent-session "s1"))
+      (should (equal sent-model '("anthropic" . "claude"))))))
 
 ;;; extract-agent-mentions
 

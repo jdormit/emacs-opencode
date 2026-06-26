@@ -133,6 +133,23 @@ MESSAGE-ID is nil, fork the whole session."
    :success success
    :error error))
 
+(cl-defmethod opencode-client-session-compact
+  ((conn opencode-connection) session-id model &key success error)
+  "Compact SESSION-ID using MODEL.
+
+MODEL is a cons (PROVIDER-ID . MODEL-ID)."
+  (opencode-request
+   conn
+   'POST
+   (format "/session/%s/summarize" session-id)
+   :json `((providerID . ,(car model))
+           (modelID . ,(cdr model))
+           (auto . :json-false))
+   :parser (lambda () nil)
+   :timeout nil
+   :success success
+   :error error))
+
 (cl-defmethod opencode-client-agents ((conn opencode-connection) &key success error)
   "Fetch available agents from the server."
   (opencode-request

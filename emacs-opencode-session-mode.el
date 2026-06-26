@@ -65,6 +65,7 @@ Each function receives SESSION and INPUT as arguments.")
     (define-key map (kbd "C-c C-o") #'opencode-command)
     (define-key map (kbd "C-c C-t") #'opencode-session-toggle-reasoning)
     (define-key map (kbd "C-c C-f") #'opencode-session-fork)
+    (define-key map (kbd "C-c C-x") #'opencode-session-compact)
     (define-key map (kbd "RET") #'newline)
     (define-key map (kbd "C-<tab>") #'completion-at-point)
     (define-key map [remap self-insert-command] #'opencode-session-self-insert)
@@ -196,6 +197,36 @@ input is preserved across the re-render."
     (opencode-session--goto-input))
   (message "OpenCode: thinking blocks %s"
            (if opencode-session--show-reasoning "shown" "hidden")))
+
+;;;###autoload
+(defun opencode-session-compact ()
+  "Compact the current OpenCode session."
+  (interactive)
+  (unless (derived-mode-p 'opencode-session-mode)
+    (error "Not in an OpenCode session buffer"))
+  (unless opencode-session--session
+    (error "OpenCode session is not connected"))
+  (let ((buffer (current-buffer)))
+    (opencode-session--ensure-connection
+     (lambda (connection)
+       (when (buffer-live-p buffer)
+         (with-current-buffer buffer
+           (let ((session-id (opencode-session-id opencode-session--session))
+                 (model (opencode-session--active-model)))
+             (unless session-id
+               (error "OpenCode session ID is missing"))
+             (unless model
+               (error "OpenCode session has no selected model"))
+             (opencode-client-session-compact
+              connection
+              session-id
+              model
+              :success (lambda (&rest _args)
+                         (message "OpenCode: compaction queued"))
+              :error (lambda (&rest args)
+                       (let ((detail (opencode-client-format-error args)))
+                         (message "OpenCode: failed to compact session%s"
+                                  (if detail (format " (%s)" detail) ""))))))))))))
 
 ;;;###autoload
 (defun opencode-session-fork ()
@@ -781,7 +812,42 @@ PREVIOUS-NAME is the previous buffer name to compare against."
      :cost (alist-get 'cost info)
      :tokens (alist-get 'tokens info)
      :tool (alist-get 'tool info)
-     :state (alist-get 'state info))))
+     :state (alist-get 'state info)
+     :auto (alist-get 'auto info)
+     :overflow (alist-get 'overflow info)
+     :tail-start-id (alist-get 'tail_start_id info))))
+
+(defun opencode-session--upsert-compaction (session-id message-id reason &optional complete)
+  "Upsert a compaction marker for SESSION-ID and MESSAGE-ID.
+
+REASON is the server compaction reason.  When COMPLETE is non-nil, mark the
+compaction part as completed."
+  (let* ((message (or (opencode-session--find-message message-id)
+                      (let ((created (opencode-message-create
+                                      :id message-id
+                                      :session-id session-id
+                                      :role "user")))
+                        (setq opencode-session--messages
+                              (append opencode-session--messages (list created)))
+                        created)))
+         (part-id (format "%s-compaction" message-id))
+         (existing (assoc part-id (opencode-message-parts message)))
+         (part (or (cdr existing)
+                   (opencode-message-part-create
+                    :id part-id
+                    :session-id session-id
+                    :message-id message-id
+                    :type "compaction"))))
+    (setf (opencode-message-part-auto part) (string= reason "auto"))
+    (when complete
+      (setf (opencode-message-part-time-end part) complete))
+    (if existing
+        (setcdr existing part)
+      (setf (opencode-message-parts message)
+            (append (opencode-message-parts message) (list (cons part-id part)))))
+    (setf (opencode-message-text message)
+          (opencode-session--message-text message))
+    (opencode-session--render-message message)))
 
 ;;; Session state management
 

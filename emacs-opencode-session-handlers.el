@@ -17,6 +17,7 @@
 (declare-function opencode-session--find-message "emacs-opencode-session-mode")
 (declare-function opencode-session--message-text "emacs-opencode-session-render")
 (declare-function opencode-session--render-message "emacs-opencode-session-render")
+(declare-function opencode-session--upsert-compaction "emacs-opencode-session-mode")
 
 ;;; Session event handlers
 
@@ -119,7 +120,7 @@ tracking and re-render the parent task tool part."
         ;; Normal case: session has a buffer
         (when (buffer-live-p buffer)
           (with-current-buffer buffer
-            (when (member (alist-get 'type part) '("text" "tool" "reasoning"))
+            (when (member (alist-get 'type part) '("text" "tool" "reasoning" "compaction"))
               (opencode-session--update-message-part part delta))))
       ;; Subagent case: track tool calls and re-render parent
       (when (and (string= (alist-get 'type part) "tool")
@@ -148,6 +149,31 @@ tracking and re-render the parent task tool part."
                 (setf (opencode-message-text message)
                       (opencode-session--message-text message))
                 (opencode-session--render-message message)))))))))
+
+(defun opencode-session--handle-compaction-started (_event data)
+  "Handle session compaction started SSE DATA."
+  (let* ((properties (alist-get 'properties data))
+         (session-id (alist-get 'sessionID properties))
+         (message-id (alist-get 'messageID properties))
+         (reason (or (alist-get 'reason properties) "manual")))
+    (when (and session-id message-id)
+      (when-let* ((buffer (opencode-session--buffer-for-session session-id)))
+        (when (buffer-live-p buffer)
+          (with-current-buffer buffer
+            (opencode-session--upsert-compaction session-id message-id reason)))))))
+
+(defun opencode-session--handle-compaction-ended (_event data)
+  "Handle session compaction ended SSE DATA."
+  (let* ((properties (alist-get 'properties data))
+         (session-id (alist-get 'sessionID properties))
+         (message-id (alist-get 'messageID properties))
+         (reason (or (alist-get 'reason properties) "manual"))
+         (timestamp (or (alist-get 'timestamp properties) t)))
+    (when (and session-id message-id)
+      (when-let* ((buffer (opencode-session--buffer-for-session session-id)))
+        (when (buffer-live-p buffer)
+          (with-current-buffer buffer
+            (opencode-session--upsert-compaction session-id message-id reason timestamp)))))))
 
 ;;; Subagent tracking
 
@@ -522,6 +548,12 @@ Returns nil when PATH is not a string."
 
 (opencode-sse-define-handler message-part-delta "message.part.delta" (_event data _meta)
   (opencode-session--handle-message-part-delta _event data))
+
+(opencode-sse-define-handler compaction-started "session.next.compaction.started" (_event data _meta)
+  (opencode-session--handle-compaction-started _event data))
+
+(opencode-sse-define-handler compaction-ended "session.next.compaction.ended" (_event data _meta)
+  (opencode-session--handle-compaction-ended _event data))
 
 (opencode-sse-define-handler file-edited "file.edited" (_event data _meta)
   (opencode-session--handle-file-updated _event data))

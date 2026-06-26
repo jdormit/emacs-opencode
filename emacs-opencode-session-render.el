@@ -52,6 +52,11 @@ deleted on every status update.")
   "Face used for tool call lines."
   :group 'emacs-opencode)
 
+(defface opencode-session-compaction-face
+  '((t :inherit shadow :slant italic))
+  "Face used for session compaction boundary markers."
+  :group 'emacs-opencode)
+
 (defcustom opencode-session-bash-output-max-lines 10
   "Maximum number of shell output lines to show before collapsing."
   :type 'integer
@@ -530,7 +535,8 @@ properties and the user prefix indicator."
 
 (defun opencode-session--render-message-parts (message parts)
   "Render PARTS for MESSAGE into a string."
-  (let ((output ""))
+  (let ((output "")
+        (rendered-compaction nil))
     (dolist (entry parts)
       (let* ((part (cdr entry))
              (part-type (opencode-message-part-type part))
@@ -540,9 +546,13 @@ properties and the user prefix indicator."
              (block-tool (and tool-part (member tool '("todowrite" "todoread"
                                                         "edit" "apply_patch"
                                                         "bash" "task")))))
-        (when rendered
+        (when (and rendered
+                   (not (and (string= part-type "compaction")
+                             rendered-compaction)))
+          (when (string= part-type "compaction")
+            (setq rendered-compaction t))
           (cond
-           ((or (string= part-type "text") (string= part-type "reasoning") block-tool)
+           ((or (member part-type '("text" "reasoning" "compaction")) block-tool)
             (when (and (not (string-empty-p output))
                        (not (string-match-p "\\n\\n+\\'" output)))
               (setq output (concat output "\n")))
@@ -575,9 +585,29 @@ properties and the user prefix indicator."
           (unless (string-empty-p (string-trim text))
             (propertize (concat "Thinking:\n" text)
                         'opencode-part-type "reasoning")))))
-     ((string= part-type "tool")
-      (opencode-session--tool-part-line part))
-     (t nil))))
+      ((string= part-type "tool")
+       (opencode-session--tool-part-line part))
+      ((string= part-type "compaction")
+       (opencode-session--compaction-line part))
+      (t nil))))
+
+(defun opencode-session--compaction-line (part)
+  "Render a compaction PART as a boundary line."
+  (let* ((automatic (opencode-message-part-auto part))
+         (overflow (opencode-message-part-overflow part))
+         (tail-start-id (opencode-message-part-tail-start-id part))
+         (complete (or tail-start-id (opencode-message-part-time-end part)))
+         (label (cond
+                 ((not complete) "Session compacting...")
+                 (automatic "Session auto-compacted")
+                 (t "Session compacted")))
+         (detail (cond
+                  ((not complete) "Earlier messages are being summarized for future context.")
+                  (overflow "Earlier messages were summarized after context overflow and are no longer sent verbatim.")
+                  (t "Earlier messages were summarized and are no longer sent verbatim."))))
+    (propertize (format "%s\n%s" label detail)
+                'opencode-part-type "compaction"
+                'face 'opencode-session-compaction-face)))
 
 (defun opencode-session--tool-propertize (text)
   "Add the tool part-type property to TEXT, preserving existing properties."

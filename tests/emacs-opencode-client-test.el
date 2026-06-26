@@ -151,6 +151,21 @@ last `request' call made during BODY."
       (should (equal (plist-get args :data)
                      (json-encode '((messageID . "msg_1"))))))))
 
+;;; session-compact
+
+(ert-deftest test-opencode-client/session-compact-sends-model ()
+  "Compacting a session posts selected model data."
+  (let ((conn (opencode-client-test--connection "/tmp/project/")))
+    (opencode-client-test--with-captured-request url args
+      (opencode-client-session-compact conn "ses_1" '("anthropic" . "claude")
+                                       :success #'ignore :error #'ignore)
+      (should (equal url "http://127.0.0.1:4096/session/ses_1/summarize"))
+      (should (equal (plist-get args :type) "POST"))
+      (should (equal (plist-get args :data)
+                     (json-encode '((providerID . "anthropic")
+                                    (modelID . "claude")
+                                    (auto . :json-false))))))))
+
 ;;; format-error
 
 (ert-deftest test-opencode-client/format-error-status-and-tag ()

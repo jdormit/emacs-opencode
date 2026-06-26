@@ -204,6 +204,59 @@
 
 ;;; event-file-paths
 
+(ert-deftest test-opencode-handlers/compaction-started-renders-marker ()
+  "Compaction start events render a marker without removing history."
+  (let ((opencode-session--buffers (make-hash-table :test 'equal))
+        (buffer (generate-new-buffer " *oc-compaction-start-test*")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (opencode-session-mode)
+          (setq-local opencode-session--session (opencode-session-create :id "s1"))
+          (setq-local opencode-session--messages
+                      (list (opencode-message-create :id "old" :role "assistant" :text "old text")))
+          (opencode-session--ensure-markers)
+          (opencode-session--ensure-input-region)
+          (opencode-session--render-buffer)
+          (puthash "s1" buffer opencode-session--buffers)
+          (opencode-session--handle-compaction-started
+           "session.next.compaction.started"
+           '((properties . ((sessionID . "s1")
+                            (messageID . "m-compact")
+                            (reason . "manual")))))
+          (let ((contents (buffer-substring-no-properties (point-min) (point-max))))
+            (should (string-match-p "old text" contents))
+            (should (string-match-p "Session compacting" contents))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest test-opencode-handlers/compaction-ended-updates-marker ()
+  "Compaction end events update the existing marker."
+  (let ((opencode-session--buffers (make-hash-table :test 'equal))
+        (buffer (generate-new-buffer " *oc-compaction-end-test*")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (opencode-session-mode)
+          (setq-local opencode-session--session (opencode-session-create :id "s1"))
+          (opencode-session--ensure-markers)
+          (opencode-session--ensure-input-region)
+          (puthash "s1" buffer opencode-session--buffers)
+          (opencode-session--handle-compaction-started
+           "session.next.compaction.started"
+           '((properties . ((sessionID . "s1")
+                            (messageID . "m-compact")
+                            (reason . "manual")))))
+          (opencode-session--handle-compaction-ended
+           "session.next.compaction.ended"
+           '((properties . ((sessionID . "s1")
+                            (messageID . "m-compact")
+                            (reason . "manual")
+                            (timestamp . "done")))))
+          (let ((contents (buffer-substring-no-properties (point-min) (point-max))))
+            (should (string-match-p "Session compacted" contents))
+            (should (= (length opencode-session--messages) 1))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest test-opencode-handlers/event-file-paths-vector ()
   "Extract paths from vector."
   (should (equal (opencode-session--event-file-paths
