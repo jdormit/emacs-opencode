@@ -133,6 +133,17 @@ MESSAGE-ID is nil, fork the whole session."
    :success success
    :error error))
 
+(cl-defmethod opencode-client-session-rename
+  ((conn opencode-connection) session-id title &key success error)
+  "Use CONN to rename SESSION-ID to TITLE."
+  (opencode-request
+   conn
+   'PATCH
+   (format "/session/%s" session-id)
+   :json `((title . ,title))
+   :success success
+   :error error))
+
 (cl-defmethod opencode-client-session-compact
   ((conn opencode-connection) session-id model &key success error)
   "Compact SESSION-ID using MODEL.

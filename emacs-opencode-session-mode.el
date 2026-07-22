@@ -199,6 +199,39 @@ input is preserved across the re-render."
            (if opencode-session--show-reasoning "shown" "hidden")))
 
 ;;;###autoload
+(defun opencode-session-rename ()
+  "Rename the current OpenCode session."
+  (interactive)
+  (unless (derived-mode-p 'opencode-session-mode)
+    (error "Not in an OpenCode session buffer"))
+  (unless opencode-session--session
+    (error "OpenCode session is not connected"))
+  (let ((title (read-string "Rename session: "
+                            (opencode-session-title opencode-session--session)))
+        (buffer (current-buffer)))
+    (opencode-session--ensure-connection
+     (lambda (connection)
+       (when (buffer-live-p buffer)
+         (with-current-buffer buffer
+           (let ((session-id (opencode-session-id opencode-session--session)))
+             (unless session-id
+               (error "OpenCode session ID is missing"))
+             (opencode-client-session-rename
+              connection
+              session-id
+              title
+              :success (lambda (&rest args)
+                         (when (buffer-live-p buffer)
+                           (with-current-buffer buffer
+                             (opencode-session--update-session
+                              (plist-get args :data))))
+                         (message "OpenCode session renamed"))
+              :error (lambda (&rest args)
+                       (let ((detail (opencode-client-format-error args)))
+                         (message "OpenCode: failed to rename session%s"
+                                  (if detail (format " (%s)" detail) ""))))))))))))
+
+;;;###autoload
 (defun opencode-session-compact ()
   "Compact the current OpenCode session."
   (interactive)

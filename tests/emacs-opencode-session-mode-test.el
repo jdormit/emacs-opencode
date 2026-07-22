@@ -226,6 +226,39 @@
       (should (equal sent-session "s1"))
       (should (equal sent-model '("anthropic" . "claude"))))))
 
+;;; rename command
+
+(ert-deftest test-opencode-session-mode/rename-updates-session-and-buffer-name ()
+  "The rename command sends and applies the new session title."
+  (let ((buffer (generate-new-buffer "*OpenCode: Old title*")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (opencode-session-mode)
+          (setq-local opencode-session--session
+                      (opencode-session-create :id "s1" :title "Old title"))
+          (let (sent-connection sent-session sent-title)
+            (cl-letf (((symbol-function 'read-string)
+                       (lambda (&rest _args) "New title"))
+                      ((symbol-function 'opencode-session--ensure-connection)
+                       (lambda (callback) (funcall callback 'conn)))
+                      ((symbol-function 'opencode-client-session-rename)
+                       (lambda (connection session-id title &rest args)
+                         (setq sent-connection connection
+                               sent-session session-id
+                               sent-title title)
+                         (funcall (plist-get args :success)
+                                  :data '((id . "s1")
+                                          (title . "New title"))))))
+              (opencode-session-rename))
+            (should (eq sent-connection 'conn))
+            (should (equal sent-session "s1"))
+            (should (equal sent-title "New title"))
+            (should (equal (opencode-session-title opencode-session--session)
+                           "New title"))
+            (should (equal (buffer-name) "*OpenCode: New title*"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 ;;; extract-agent-mentions
 
 (ert-deftest test-opencode-session-mode/extract-mentions-single ()

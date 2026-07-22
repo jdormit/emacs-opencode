@@ -65,6 +65,8 @@ They support:
   open its child session.
 - Reasoning/thinking blocks are hidden by default and can be toggled per buffer
   with =C-c C-t= when the OpenCode server has reasoning parts for the session.
+- Rename the current session with =M-x opencode-session-rename=. The session
+  buffer and header update to use the new title.
 - Compact a session on demand with =C-c C-x=. Compaction keeps the transcript
   visible in the buffer and inserts a boundary marker showing where earlier
   messages were summarized for future model context.

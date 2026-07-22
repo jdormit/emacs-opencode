@@ -151,6 +151,19 @@ last `request' call made during BODY."
       (should (equal (plist-get args :data)
                      (json-encode '((messageID . "msg_1"))))))))
 
+;;; session-rename
+
+(ert-deftest test-opencode-client/session-rename-sends-title ()
+  "Renaming a session patches its title."
+  (let ((conn (opencode-client-test--connection "/tmp/project/")))
+    (opencode-client-test--with-captured-request url args
+      (opencode-client-session-rename conn "ses_1" "New title"
+                                      :success #'ignore :error #'ignore)
+      (should (equal url "http://127.0.0.1:4096/session/ses_1"))
+      (should (equal (plist-get args :type) "PATCH"))
+      (should (equal (plist-get args :data)
+                     (json-encode '((title . "New title"))))))))
+
 ;;; session-compact
 
 (ert-deftest test-opencode-client/session-compact-sends-model ()
