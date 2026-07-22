@@ -795,11 +795,31 @@ INPUT and METADATA may include the file path."
   "Return extra block content for TOOL from INPUT or METADATA.
 PART is the full message part, used for collapse identifiers."
   (cond
+   ((string= tool "read")
+    (opencode-session--read-loaded-block metadata part))
    ((member tool '("edit" "apply_patch"))
     (when (listp metadata)
       (opencode-session--nonempty-string (alist-get 'diff metadata))))
    ((string= tool "bash")
     (opencode-session--bash-extra-block input metadata part))))
+
+(defun opencode-session--read-loaded-block (metadata part)
+  "Render instruction paths loaded by a completed read PART.
+METADATA is the read tool's completion metadata."
+  (let* ((state (and part (opencode-message-part-state part)))
+         (status (alist-get 'status state))
+         (time (alist-get 'time state))
+         (loaded (and (string= status "completed")
+                      (not (alist-get 'compacted time))
+                      (alist-get 'loaded metadata)))
+         (paths (cond
+                 ((vectorp loaded) (append loaded nil))
+                 ((listp loaded) loaded))))
+    (when paths
+      (mapconcat (lambda (path)
+                   (format "↳ Loaded %s" (opencode-session--display-path path)))
+                 (cl-remove-if-not #'stringp paths)
+                 "\n"))))
 
 (defun opencode-session--bash-extra-block (input metadata part)
   "Build the extra block for a bash tool call.

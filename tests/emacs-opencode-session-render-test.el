@@ -178,6 +178,55 @@
       (should (string-match-p "offset=10" result))
       (should (string-match-p "limit=20" result)))))
 
+(ert-deftest test-opencode-render/read-shows-loaded-instructions ()
+  "Render instruction files loaded by a completed read tool."
+  (let* ((opencode-session--connection
+          (opencode-connection-create :directory "/project/"))
+         (part (opencode-message-part-create
+                :id "p1"
+                :type "tool"
+                :tool "read"
+                :state '((status . "completed")
+                         (input . ((filePath . "/project/src/main.el")))
+                         (metadata . ((loaded . ["/project/AGENTS.md"
+                                                "/project/src/CLAUDE.md"])))
+                         (time . ((start . 1) (end . 2)))))))
+    (should (equal (substring-no-properties
+                    (opencode-session--render-message-part
+                     (opencode-message-create :role "assistant") part))
+                   "→ Read src/main.el\n↳ Loaded AGENTS.md\n↳ Loaded src/CLAUDE.md"))))
+
+(ert-deftest test-opencode-render/read-hides-loaded-instructions-when-compacted ()
+  "Do not render loaded instruction files from compacted read parts."
+  (let ((opencode-session--connection nil)
+        (part (opencode-message-part-create
+               :id "p1"
+               :type "tool"
+               :tool "read"
+               :state '((status . "completed")
+                        (input . ((filePath . "/project/src/main.el")))
+                        (metadata . ((loaded . ["/project/AGENTS.md"])))
+                        (time . ((compacted . 3)))))))
+    (should-not (string-match-p
+                 "Loaded"
+                 (opencode-session--render-message-part
+                  (opencode-message-create :role "assistant") part)))))
+
+(ert-deftest test-opencode-render/read-hides-loaded-instructions-while-running ()
+  "Do not render loaded instruction files before a read completes."
+  (let ((opencode-session--connection nil)
+        (part (opencode-message-part-create
+               :id "p1"
+               :type "tool"
+               :tool "read"
+               :state '((status . "running")
+                        (input . ((filePath . "/project/src/main.el")))
+                        (metadata . ((loaded . ["/project/AGENTS.md"])))))))
+    (should-not (string-match-p
+                 "Loaded"
+                 (opencode-session--render-message-part
+                  (opencode-message-create :role "assistant") part)))))
+
 (ert-deftest test-opencode-render/tool-bash-description ()
   "Render bash tool with description."
   (should (equal (opencode-session--tool-bash
