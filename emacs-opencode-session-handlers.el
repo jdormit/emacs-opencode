@@ -19,6 +19,83 @@
 (declare-function opencode-session--render-message "emacs-opencode-session-render")
 (declare-function opencode-session--upsert-compaction "emacs-opencode-session-mode")
 
+(cl-defstruct (opencode-session--prompt-state
+               (:constructor opencode-session--prompt-state-create))
+  connection
+  request-id
+  status)
+
+(defvar opencode-session--pending-prompts (make-hash-table :test #'eq)
+  "Pending permission and question prompts grouped by connection.")
+
+(defvar opencode-session--active-prompt nil
+  "State for the OpenCode prompt currently using the minibuffer.")
+
+(defvar-local opencode-session--minibuffer-prompt nil
+  "OpenCode prompt state associated with this minibuffer.")
+
+(defun opencode-session--prompt-table (connection &optional create)
+  "Return the pending prompt table for CONNECTION.
+Create and register the table when CREATE is non-nil."
+  (or (gethash connection opencode-session--pending-prompts)
+      (when create
+        (let ((table (make-hash-table :test #'equal)))
+          (puthash connection table opencode-session--pending-prompts)
+          table))))
+
+(defun opencode-session--register-prompt (connection request-id)
+  "Register REQUEST-ID as pending on CONNECTION.
+Return its new state, or nil when it is already registered."
+  (let ((table (opencode-session--prompt-table connection t)))
+    (unless (gethash request-id table)
+      (let ((state (opencode-session--prompt-state-create
+                    :connection connection
+                    :request-id request-id
+                    :status 'pending)))
+        (puthash request-id state table)
+        state))))
+
+(defun opencode-session--remove-prompt (state)
+  "Remove pending prompt STATE from its connection registry."
+  (let* ((connection (opencode-session--prompt-state-connection state))
+         (request-id (opencode-session--prompt-state-request-id state))
+         (table (opencode-session--prompt-table connection)))
+    (when (and table (eq (gethash request-id table) state))
+      (remhash request-id table)
+      (when (zerop (hash-table-count table))
+        (remhash connection opencode-session--pending-prompts)))))
+
+(defun opencode-session--prompt-active-p (state)
+  "Return non-nil when STATE owns the active minibuffer."
+  (and (eq state opencode-session--active-prompt)
+       (when-let* ((window (active-minibuffer-window)))
+         (with-current-buffer (window-buffer window)
+           (eq state opencode-session--minibuffer-prompt)))))
+
+(defun opencode-session--run-prompt (state function)
+  "Run prompt FUNCTION for STATE, cleaning up if it fails."
+  (condition-case err
+      (funcall function)
+    (error
+     (when (eq (opencode-session--prompt-state-status state) 'pending)
+       (setf (opencode-session--prompt-state-status state) 'failed)
+       (opencode-session--remove-prompt state))
+     (signal (car err) (cdr err)))))
+
+(defun opencode-session--handle-prompt-resolved (_event data meta)
+  "Handle a prompt completion SSE DATA arriving with META."
+  (let* ((properties (alist-get 'properties data))
+         (request-id (alist-get 'requestID properties))
+         (connection (plist-get meta :connection))
+         (table (opencode-session--prompt-table connection))
+         (state (and table (gethash request-id table))))
+    (when state
+      (setf (opencode-session--prompt-state-status state) 'resolved)
+      (opencode-session--remove-prompt state)
+      (when (opencode-session--prompt-active-p state)
+        (message "OpenCode request answered in another client")
+        (abort-recursive-edit)))))
+
 ;;; Session event handlers
 
 (defun opencode-session--handle-session-created (_event data)
@@ -269,30 +346,41 @@ PARENT-SESSION-ID is the session that owns the task tool part."
          (fallback (if kind (format "use %s" kind) "proceed")))
     (format "OpenCode wants to %s: " (or detail fallback))))
 
-(defun opencode-session--prompt-permission (permission connection)
-  "Prompt for PERMISSION and send a response via CONNECTION."
+(defun opencode-session--prompt-permission (permission connection state)
+  "Prompt for PERMISSION and send a response via CONNECTION.
+STATE tracks whether another client resolves the request."
   (let* ((request-id (alist-get 'id permission))
          (choices '("Allow once" "Allow always" "Deny"))
          (prompt (opencode-session--permission-prompt-label permission))
-         (selection (condition-case nil
-                        (completing-read prompt choices nil t)
-                      (quit "Deny")))
+         (selection
+          (let ((opencode-session--active-prompt state))
+            (condition-case nil
+                (minibuffer-with-setup-hook
+                    (lambda ()
+                      (setq-local opencode-session--minibuffer-prompt state))
+                  (completing-read prompt choices nil t))
+              (quit (unless (eq (opencode-session--prompt-state-status state)
+                                'resolved)
+                      "Deny")))))
          (reply (cond
-                 ((string= selection "Allow always") "always")
-                 ((string= selection "Allow once") "once")
-                 (t "reject"))))
+                  ((equal selection "Allow always") "always")
+                  ((equal selection "Allow once") "once")
+                  (t "reject"))))
     (unless connection
       (error "OpenCode session is not connected"))
     (unless request-id
       (error "OpenCode permission request is missing ID"))
-    (opencode-client-permission-reply
-     connection
-     request-id
-     reply
-     :success (lambda (&rest _args)
-                (message "OpenCode permission reply sent"))
-     :error (lambda (&rest _args)
-              (message "OpenCode: failed to reply to permission request")))))
+    (unless (eq (opencode-session--prompt-state-status state) 'resolved)
+      (setf (opencode-session--prompt-state-status state) 'answered)
+      (opencode-session--remove-prompt state)
+      (opencode-client-permission-reply
+       connection
+       request-id
+       reply
+       :success (lambda (&rest _args)
+                  (message "OpenCode permission reply sent"))
+       :error (lambda (&rest _args)
+                (message "OpenCode: failed to reply to permission request"))))))
 
 (defun opencode-session--handle-permission-asked (_event data meta)
   "Handle the permission.asked SSE DATA arriving with META.
@@ -306,17 +394,24 @@ from subagent sessions.  Defers to a timer so `completing-read'
 does not block the process filter."
   (let* ((permission (alist-get 'properties data))
          (session-id (alist-get 'sessionID permission))
-         (connection (plist-get meta :connection)))
-    (run-at-time 0 nil
-     (lambda ()
-       (let ((buffer (or (opencode-session--buffer-for-session session-id)
-                         (opencode-session--any-live-session-buffer connection))))
-         (if (and buffer (buffer-live-p buffer))
-             (with-current-buffer buffer
-               (opencode-session--prompt-permission permission connection))
-           ;; No buffer to host the prompt, but we can still reply via
-           ;; the originating connection.
-           (opencode-session--prompt-permission permission connection)))))))
+         (connection (plist-get meta :connection))
+         (state (opencode-session--register-prompt
+                 connection (alist-get 'id permission))))
+    (when state
+      (run-at-time 0 nil
+       (lambda ()
+         (when (eq (opencode-session--prompt-state-status state) 'pending)
+           (opencode-session--run-prompt
+            state
+            (lambda ()
+              (let ((buffer (or (opencode-session--buffer-for-session session-id)
+                                (opencode-session--any-live-session-buffer connection))))
+                (if (and buffer (buffer-live-p buffer))
+                    (with-current-buffer buffer
+                      (opencode-session--prompt-permission permission connection state))
+                  ;; No buffer to host the prompt, but we can still reply via
+                  ;; the originating connection.
+                  (opencode-session--prompt-permission permission connection state)))))))))))
 
 ;;; Question handling
 
@@ -391,33 +486,44 @@ Returns a list of answer strings."
               (opencode-session--question-read-single question)))
           questions))
 
-(defun opencode-session--prompt-question (payload connection)
-  "Prompt for question PAYLOAD and send a response via CONNECTION."
+(defun opencode-session--prompt-question (payload connection state)
+  "Prompt for question PAYLOAD and send a response via CONNECTION.
+STATE tracks whether another client resolves the request."
   (let* ((request-id (alist-get 'id payload))
          (questions (opencode-session--question-list (alist-get 'questions payload)))
-         (answers (condition-case nil
-                      (opencode-session--question-answers questions)
-                    (quit :reject))))
+         (answers
+          (let ((opencode-session--active-prompt state))
+            (condition-case nil
+                (minibuffer-with-setup-hook
+                    (lambda ()
+                      (setq-local opencode-session--minibuffer-prompt state))
+                  (opencode-session--question-answers questions))
+              (quit (unless (eq (opencode-session--prompt-state-status state)
+                                'resolved)
+                      :reject))))))
     (unless connection
       (error "OpenCode session is not connected"))
     (unless request-id
       (error "OpenCode question request is missing ID"))
-    (if (eq answers :reject)
-        (opencode-client-question-reject
+    (unless (eq (opencode-session--prompt-state-status state) 'resolved)
+      (setf (opencode-session--prompt-state-status state) 'answered)
+      (opencode-session--remove-prompt state)
+      (if (eq answers :reject)
+          (opencode-client-question-reject
+           connection
+           request-id
+           :success (lambda (&rest _args)
+                       (message "OpenCode question rejected"))
+           :error (lambda (&rest _args)
+                    (message "OpenCode: failed to reject question")))
+        (opencode-client-question-reply
          connection
          request-id
+         answers
          :success (lambda (&rest _args)
-                    (message "OpenCode question rejected"))
+                    (message "OpenCode question reply sent"))
          :error (lambda (&rest _args)
-                  (message "OpenCode: failed to reject question")))
-      (opencode-client-question-reply
-       connection
-       request-id
-       answers
-       :success (lambda (&rest _args)
-                  (message "OpenCode question reply sent"))
-       :error (lambda (&rest _args)
-                (message "OpenCode: failed to reply to question"))))))
+                  (message "OpenCode: failed to reply to question")))))))
 
 (defun opencode-session--handle-question-asked (_event data meta)
   "Handle the question.asked SSE DATA arriving with META.
@@ -431,15 +537,22 @@ subagent sessions.  Defers to a timer so `completing-read' does
 not block the process filter."
   (let* ((question (alist-get 'properties data))
          (session-id (alist-get 'sessionID question))
-         (connection (plist-get meta :connection)))
-    (run-at-time 0 nil
-     (lambda ()
-       (let ((buffer (or (opencode-session--buffer-for-session session-id)
-                         (opencode-session--any-live-session-buffer connection))))
-         (if (and buffer (buffer-live-p buffer))
-             (with-current-buffer buffer
-               (opencode-session--prompt-question question connection))
-           (opencode-session--prompt-question question connection)))))))
+         (connection (plist-get meta :connection))
+         (state (opencode-session--register-prompt
+                 connection (alist-get 'id question))))
+    (when state
+      (run-at-time 0 nil
+       (lambda ()
+         (when (eq (opencode-session--prompt-state-status state) 'pending)
+           (opencode-session--run-prompt
+            state
+            (lambda ()
+              (let ((buffer (or (opencode-session--buffer-for-session session-id)
+                                (opencode-session--any-live-session-buffer connection))))
+                (if (and buffer (buffer-live-p buffer))
+                    (with-current-buffer buffer
+                      (opencode-session--prompt-question question connection state))
+                  (opencode-session--prompt-question question connection state)))))))))))
 
 ;;; File revert handling
 
@@ -537,8 +650,17 @@ Returns nil when PATH is not a string."
 (opencode-sse-define-handler permission-asked "permission.asked" (_event data meta)
   (opencode-session--handle-permission-asked _event data meta))
 
+(opencode-sse-define-handler permission-replied "permission.replied" (_event data meta)
+  (opencode-session--handle-prompt-resolved _event data meta))
+
 (opencode-sse-define-handler question-asked "question.asked" (_event data meta)
   (opencode-session--handle-question-asked _event data meta))
+
+(opencode-sse-define-handler question-replied "question.replied" (_event data meta)
+  (opencode-session--handle-prompt-resolved _event data meta))
+
+(opencode-sse-define-handler question-rejected "question.rejected" (_event data meta)
+  (opencode-session--handle-prompt-resolved _event data meta))
 
 (opencode-sse-define-handler message-updated "message.updated" (_event data _meta)
   (opencode-session--handle-message-updated _event data))

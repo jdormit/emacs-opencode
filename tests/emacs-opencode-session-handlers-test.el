@@ -362,6 +362,180 @@ reply must go to the originating connection, not an arbitrary buffer."
     (should (eq replied-conn event-conn))
     (should (equal replied-id "qst_789"))))
 
+;;; Cross-client prompt resolution
+
+(ert-deftest test-opencode-handlers/resolved-before-timer-skips-prompt ()
+  "A remotely resolved request is not prompted after its timer fires."
+  (let ((opencode-session--pending-prompts (make-hash-table :test #'eq))
+        (connection 'conn)
+        timer-function
+        (prompted nil))
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (_secs _repeat fn &rest _args)
+                 (setq timer-function fn)))
+              ((symbol-function 'opencode-session--prompt-permission)
+               (lambda (&rest _args)
+                 (setq prompted t))))
+      (opencode-session--handle-permission-asked
+       "permission.asked"
+       '((properties . ((id . "per_remote")
+                        (sessionID . "session"))))
+       (list :connection connection))
+      (opencode-session--handle-prompt-resolved
+       "permission.replied"
+       '((properties . ((requestID . "per_remote"))))
+       (list :connection connection))
+      (funcall timer-function))
+    (should-not prompted)))
+
+(ert-deftest test-opencode-handlers/duplicate-asked-schedules-one-prompt ()
+  "Duplicate asked events schedule only one minibuffer prompt."
+  (let ((opencode-session--pending-prompts (make-hash-table :test #'eq))
+        (connection 'conn)
+        (timer-count 0))
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (&rest _args)
+                 (setq timer-count (1+ timer-count)))))
+      (dotimes (_ 2)
+        (opencode-session--handle-question-asked
+         "question.asked"
+         '((properties . ((id . "que_duplicate")
+                          (sessionID . "session")
+                          (questions . []))))
+         (list :connection connection))))
+    (should (= timer-count 1))))
+
+(ert-deftest test-opencode-handlers/remote-permission-reply-dismisses-prompt ()
+  "A remote permission reply aborts the prompt without replying again."
+  (let ((opencode-session--pending-prompts (make-hash-table :test #'eq))
+        (connection 'conn)
+        (reply-count 0))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest _args)
+                 (opencode-session--handle-prompt-resolved
+                  "permission.replied"
+                  '((properties . ((requestID . "per_remote"))))
+                  (list :connection connection))))
+              ((symbol-function 'opencode-session--prompt-active-p)
+               (lambda (_state) t))
+              ((symbol-function 'abort-recursive-edit)
+               (lambda () (signal 'quit nil)))
+              ((symbol-function 'opencode-client-permission-reply)
+               (lambda (&rest _args)
+                 (setq reply-count (1+ reply-count)))))
+      (opencode-handlers-test--with-sync-timer
+        (opencode-session--handle-permission-asked
+         "permission.asked"
+         '((properties . ((id . "per_remote")
+                          (sessionID . "session")
+                          (permission . "read"))))
+         (list :connection connection))))
+    (should (= reply-count 0))))
+
+(ert-deftest test-opencode-handlers/remote-question-rejection-dismisses-prompt ()
+  "A remote question rejection aborts the prompt without rejecting again."
+  (let ((opencode-session--pending-prompts (make-hash-table :test #'eq))
+        (connection 'conn)
+        (reject-count 0))
+    (cl-letf (((symbol-function 'opencode-session--question-answers)
+               (lambda (&rest _args)
+                 (opencode-session--handle-prompt-resolved
+                  "question.rejected"
+                  '((properties . ((requestID . "que_remote"))))
+                  (list :connection connection))))
+              ((symbol-function 'opencode-session--prompt-active-p)
+               (lambda (_state) t))
+              ((symbol-function 'abort-recursive-edit)
+               (lambda () (signal 'quit nil)))
+              ((symbol-function 'opencode-client-question-reject)
+               (lambda (&rest _args)
+                 (setq reject-count (1+ reject-count)))))
+      (opencode-handlers-test--with-sync-timer
+        (opencode-session--handle-question-asked
+         "question.asked"
+         '((properties . ((id . "que_remote")
+                          (sessionID . "session")
+                          (questions . []))))
+         (list :connection connection))))
+    (should (= reject-count 0))))
+
+(ert-deftest test-opencode-handlers/resolution-does-not-abort-other-prompt ()
+  "Resolving one request does not abort a different active prompt."
+  (let* ((opencode-session--pending-prompts (make-hash-table :test #'eq))
+         (connection 'conn)
+         (active (opencode-session--register-prompt connection "per_active"))
+         (_other (opencode-session--register-prompt connection "per_other"))
+         (aborted nil)
+         (opencode-session--active-prompt active))
+    (cl-letf (((symbol-function 'active-minibuffer-window) (lambda () t))
+              ((symbol-function 'abort-recursive-edit)
+               (lambda () (setq aborted t))))
+      (opencode-session--handle-prompt-resolved
+       "permission.replied"
+       '((properties . ((requestID . "per_other"))))
+       (list :connection connection)))
+    (should-not aborted)
+    (should (eq (opencode-session--prompt-state-status active) 'pending))))
+
+(ert-deftest test-opencode-handlers/prompt-active-requires-matching-minibuffer ()
+  "Prompt ownership requires both active state and a matching minibuffer."
+  (let* ((state (opencode-session--prompt-state-create :status 'pending))
+         (other (opencode-session--prompt-state-create :status 'pending))
+         (opencode-session--active-prompt state)
+         (opencode-session--minibuffer-prompt other))
+    (cl-letf (((symbol-function 'active-minibuffer-window) (lambda () t))
+              ((symbol-function 'window-buffer) (lambda (_window) (current-buffer))))
+      (should-not (opencode-session--prompt-active-p state))
+      (setq opencode-session--minibuffer-prompt state)
+      (should (opencode-session--prompt-active-p state)))))
+
+(ert-deftest test-opencode-handlers/prompt-error-clears-pending-state ()
+  "A failed prompt does not suppress a later event for the same request."
+  (let* ((opencode-session--pending-prompts (make-hash-table :test #'eq))
+         (connection 'conn)
+         (state (opencode-session--register-prompt connection "per_retry")))
+    (should-error
+     (opencode-session--run-prompt state (lambda () (error "Prompt failed"))))
+    (should (opencode-session--register-prompt connection "per_retry"))))
+
+(ert-deftest test-opencode-handlers/user-quit-still-denies-permission ()
+  "Quitting a permission prompt still sends a rejection."
+  (let ((opencode-session--pending-prompts (make-hash-table :test #'eq))
+        (connection 'conn)
+        reply)
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest _args) (signal 'quit nil)))
+              ((symbol-function 'opencode-client-permission-reply)
+               (lambda (_connection _request-id value &rest _args)
+                 (setq reply value))))
+      (opencode-handlers-test--with-sync-timer
+        (opencode-session--handle-permission-asked
+         "permission.asked"
+         '((properties . ((id . "per_quit")
+                          (sessionID . "session")
+                          (permission . "read"))))
+         (list :connection connection))))
+    (should (equal reply "reject"))))
+
+(ert-deftest test-opencode-handlers/user-quit-still-rejects-question ()
+  "Quitting a question prompt still calls the rejection endpoint."
+  (let ((opencode-session--pending-prompts (make-hash-table :test #'eq))
+        (connection 'conn)
+        (rejected nil))
+    (cl-letf (((symbol-function 'opencode-session--question-answers)
+               (lambda (&rest _args) (signal 'quit nil)))
+              ((symbol-function 'opencode-client-question-reject)
+               (lambda (&rest _args)
+                 (setq rejected t))))
+      (opencode-handlers-test--with-sync-timer
+        (opencode-session--handle-question-asked
+         "question.asked"
+         '((properties . ((id . "que_quit")
+                          (sessionID . "session")
+                          (questions . []))))
+         (list :connection connection))))
+    (should rejected)))
+
 (provide 'emacs-opencode-session-handlers-test)
 
 ;;; emacs-opencode-session-handlers-test.el ends here
