@@ -116,6 +116,27 @@
     (should-not (equal (car (nth 0 choices))
                        (car (nth 1 choices))))))
 
+(ert-deftest test-opencode/select-session-excludes-subagents ()
+  "Exclude sessions with a parent from session completion."
+  (let (candidates selected-session)
+    (cl-letf (((symbol-function 'opencode-client-sessions)
+               (lambda (_connection &rest args)
+                 (should (plist-get args :roots))
+                 (funcall (plist-get args :success)
+                          :data [((id . "parent") (title . "Parent"))
+                                 ((id . "child") (title . "Child")
+                                  (parentID . "parent"))])))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _args)
+                 (setq candidates (all-completions "" collection))
+                 (car candidates))))
+      (opencode--select-session
+       nil "OpenCode session: "
+       (lambda (session _info)
+         (setq selected-session session))))
+    (should (equal candidates '("Parent")))
+    (should (equal (opencode-session-id selected-session) "parent"))))
+
 (provide 'emacs-opencode-test)
 
 ;;; emacs-opencode-test.el ends here

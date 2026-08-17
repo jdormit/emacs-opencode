@@ -162,9 +162,12 @@ Call ON-SELECTED with the selected session and session info data."
   (opencode-client-sessions
    connection
    :limit opencode-session-list-limit
+   :roots t
    :success (lambda (&rest args)
               (let* ((data (plist-get args :data))
-                     (items (opencode--session-items data))
+                     (items (cl-remove-if
+                             (lambda (item) (alist-get 'parentID item))
+                             (opencode--session-items data)))
                      (ordered-items (opencode--order-sessions-by-buffer items))
                      (choices (opencode--session-choices ordered-items))
                      (table (lambda (string pred action)

@@ -94,17 +94,19 @@ from the x-opencode-directory header sent with every request."
    :success success
    :error error))
 
-(cl-defmethod opencode-client-sessions ((conn opencode-connection) &key success error limit)
+(cl-defmethod opencode-client-sessions ((conn opencode-connection) &key success error limit roots)
   "Fetch OpenCode sessions list.
 
 LIMIT restricts the number of returned sessions when provided.  The
 server caps the list at 100 sessions by default, so a higher LIMIT is
-required to retrieve more."
+required to retrieve more.  When ROOTS is non-nil, return only sessions
+without a parent."
   (opencode-request
    conn
    'GET
    "/session"
-   :params (when limit `(("limit" . ,limit)))
+   :params (append (when roots '(("roots" . "true")))
+                   (when limit `(("limit" . ,limit))))
    :success success
    :error error))
 

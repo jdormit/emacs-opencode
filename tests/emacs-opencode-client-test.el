@@ -109,6 +109,15 @@ last `request' call made during BODY."
       (should (equal (plist-get args :params) '(("limit" . 1000))))
       (should (null (plist-get args :data))))))
 
+(ert-deftest test-opencode-client/sessions-forwards-roots ()
+  "Root-only session lists request server-side filtering."
+  (let ((conn (opencode-client-test--connection "/tmp/project/")))
+    (opencode-client-test--with-captured-request _url args
+      (opencode-client-sessions conn :limit 1000 :roots t
+                                :success #'ignore :error #'ignore)
+      (should (equal (plist-get args :params)
+                     '(("roots" . "true") ("limit" . 1000)))))))
+
 ;;; session-messages
 
 (ert-deftest test-opencode-client/session-messages-no-limit-omits-params ()
