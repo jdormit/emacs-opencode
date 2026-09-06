@@ -376,19 +376,27 @@ Clears the retry banner before inserting so the new message lands
 above the banner, then re-renders the banner just above the input
 prompt."
   (opencode-session--clear-retry-banner)
-  (let ((inhibit-read-only t))
-    (save-excursion
-      (goto-char (marker-position opencode-session--input-start-marker))
-      (let ((start (point)))
-        (insert text)
-        (let ((end (point)))
-          (setf (opencode-message-start-marker message) (copy-marker start))
-          (setf (opencode-message-end-marker message) (copy-marker end)))
-        (insert "\n")
-        (set-marker opencode-session--input-start-marker (point))
-        (set-marker opencode-session--input-marker (point-max))
-        (opencode-session--ensure-input-prompt)
-        (opencode-session--apply-message-properties start (point) face message))))
+  (let ((inhibit-read-only t)
+        ;; Preserve point as a marker (not `save-excursion', which restores a
+        ;; stale numeric point that lands at the START of the inserted message
+        ;; when inserting at point-max, throwing the cursor out of the input
+        ;; area after the model responds).
+        (point-marker (copy-marker (point) t)))
+    (unwind-protect
+        (progn
+          (goto-char (marker-position opencode-session--input-start-marker))
+          (let ((start (point)))
+            (insert text)
+            (let ((end (point)))
+              (setf (opencode-message-start-marker message) (copy-marker start))
+              (setf (opencode-message-end-marker message) (copy-marker end)))
+            (insert "\n")
+            (set-marker opencode-session--input-start-marker (point))
+            (set-marker opencode-session--input-marker (point-max))
+            (opencode-session--ensure-input-prompt)
+            (opencode-session--apply-message-properties start (point) face message)))
+      (goto-char point-marker)
+      (set-marker point-marker nil)))
   (opencode-session--render-retry-banner))
 
 (defun opencode-session--retry-banner-text (status)
@@ -465,22 +473,27 @@ banner occupies its own line."
                           (propertize "\n\n"
                                       'read-only t
                                       'front-sticky t
-                                      'rear-nonsticky t))))
-    (save-excursion
-      (goto-char (marker-position opencode-session--input-start-marker))
-      (let ((insert-start (point)))
-        (insert rendered)
-        (let ((insert-end (point)))
-          (setq-local opencode-session--retry-banner-start
-                      (copy-marker insert-start))
-          (setq-local opencode-session--retry-banner-end
-                      (copy-marker insert-end))
-          ;; Push only the input boundary past the banner.  User input
-          ;; remains the text from that boundary through `point-max'.
-          (set-marker opencode-session--input-start-marker insert-end)
-          (when (markerp opencode-session--input-marker)
-            (set-marker opencode-session--input-marker (point-max)))
-          (opencode-session--ensure-input-prompt))))))
+                                      'rear-nonsticky t)))
+        ;; Same stale-point hazard as `opencode-session--insert-message'.
+        (point-marker (copy-marker (point) t)))
+    (unwind-protect
+        (progn
+          (goto-char (marker-position opencode-session--input-start-marker))
+          (let ((insert-start (point)))
+            (insert rendered)
+            (let ((insert-end (point)))
+              (setq-local opencode-session--retry-banner-start
+                          (copy-marker insert-start))
+              (setq-local opencode-session--retry-banner-end
+                          (copy-marker insert-end))
+              ;; Push only the input boundary past the banner.  User input
+              ;; remains the text from that boundary through `point-max'.
+              (set-marker opencode-session--input-start-marker insert-end)
+              (when (markerp opencode-session--input-marker)
+                (set-marker opencode-session--input-marker (point-max)))
+              (opencode-session--ensure-input-prompt))))
+      (goto-char point-marker)
+      (set-marker point-marker nil))))
 
 (defun opencode-session--apply-message-properties (start end _face message)
   "Apply read-only properties from START to END for MESSAGE.
