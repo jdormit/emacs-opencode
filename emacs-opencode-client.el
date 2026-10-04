@@ -10,16 +10,36 @@
 
 (declare-function opencode--json-read "emacs-opencode-sse")
 
+(defconst opencode-client--message-page-size 200
+  "Number of messages requested per page when loading session history.
+This is the largest page the server accepts.")
+
+(defun opencode-client--location-directory (conn)
+  "Return CONN's directory in the form the server stores locations.
+Symlinks are resolved and the trailing slash is dropped so sessions created
+here match the server's view of the project."
+  (when-let* ((directory (opencode-connection-directory conn)))
+    (directory-file-name (file-truename directory))))
+
 (defun opencode-client--directory-header (conn headers)
   "Return a directory routing header alist for CONN.
 
 Returns nil when CONN has no directory or HEADERS already contains an
-x-opencode-directory entry.  The header value is the connection directory
-without its trailing slash, url-encoded to match the OpenCode SDK."
-  (when-let* ((directory (opencode-connection-directory conn)))
+x-opencode-directory entry.  The value is url-encoded to match the OpenCode
+SDK."
+  (when-let* ((directory (opencode-client--location-directory conn)))
     (unless (assoc "x-opencode-directory" headers)
-      `(("x-opencode-directory"
-         . ,(url-hexify-string (directory-file-name directory)))))))
+      `(("x-opencode-directory" . ,(url-hexify-string directory))))))
+
+(defun opencode-client--auth-header (conn)
+  "Return a Basic Authorization header alist for CONN, or nil without a password."
+  (when-let* ((password (opencode-connection-password conn)))
+    `(("Authorization"
+       . ,(concat "Basic "
+                  (base64-encode-string
+                   (format "%s:%s" (or (opencode-connection-username conn) "opencode")
+                           password)
+                   t))))))
 
 (defun opencode-client-format-error (args)
   "Return a short description of a failed request from ARGS.
@@ -39,6 +59,20 @@ string like \"HTTP 400: BadRequest\", or nil when no detail is available."
      (detail (format "%s" detail))
      (error-thrown (format "%s" error-thrown)))))
 
+(defun opencode-client--unwrap (success)
+  "Wrap SUCCESS so it receives the response's `data' field as :data.
+Most endpoints return {\"data\": ...}; callers only need the payload."
+  (when success
+    (lambda (&rest args)
+      (let ((data (plist-get args :data)))
+        (apply success
+               (plist-put (copy-sequence args) :data
+                          (and (listp data) (alist-get 'data data))))))))
+
+(defun opencode-client--no-content ()
+  "Parse an empty response body."
+  nil)
+
 (cl-defmethod opencode-request ((conn opencode-connection) method path &rest args &key data json parser headers timeout &allow-other-keys)
   "Send a raw HTTP request using CONN.
 
@@ -48,14 +82,12 @@ provided, it is encoded and sent with a JSON content type. PARSER defaults to
 `json-read` when omitted. HEADERS is an alist of HTTP headers. Any remaining
 ARGS are forwarded to `request`.  Every request carries an
 x-opencode-directory header derived from the connection directory so the
-server routes session-less requests to the right workspace."
+server routes requests to the right workspace."
   (let* ((base-url (opencode-connection-base-url conn))
          (url (concat (string-remove-suffix "/" base-url) path))
-         (auth (when (opencode-connection-password conn)
-                 (list (or (opencode-connection-username conn) "opencode")
-                       (opencode-connection-password conn))))
          (payload (when json (json-encode json)))
          (merged-headers (append (opencode-client--directory-header conn headers)
+                                 (opencode-client--auth-header conn)
                                  headers
                                  (when json
                                    '(("Content-Type" . "application/json")))))
@@ -69,69 +101,112 @@ server routes session-less requests to the right workspace."
      :data (or payload data)
      :parser (or parser #'opencode--json-read)
      :headers merged-headers
-     :auth auth
      :timeout timeout-value
      args)))
 
-(cl-defmethod opencode-client-health ((conn opencode-connection) &key success error)
-  "Fetch OpenCode server health."
-  (opencode-request
-   conn
-   'GET
-   "/global/health"
-   :success success
-   :error error))
+(defun opencode-client--path (format-string &rest ids)
+  "Return FORMAT-STRING with url-encoded IDS substituted."
+  (apply #'format format-string (mapcar #'url-hexify-string ids)))
 
-(cl-defmethod opencode-client-session-create ((conn opencode-connection) &key success error)
+(cl-defmethod opencode-client-health ((conn opencode-connection) &key success error)
+  "Fetch OpenCode server info, which doubles as a health check."
+  (opencode-request conn 'GET "/api/info" :success success :error error))
+
+(cl-defmethod opencode-client-location ((conn opencode-connection) &key success error)
+  "Fetch the location and project that CONN's directory resolves to."
+  (opencode-request conn 'GET "/api/location" :success success :error error))
+
+(cl-defmethod opencode-client-session-create ((conn opencode-connection) &key agent model permissions success error)
   "Create a new session in CONN's directory.
 
-The request body is empty; the server resolves the target directory
-from the x-opencode-directory header sent with every request."
+AGENT names the initial agent.  MODEL is a model reference alist with
+`providerID', `id', and optional `variant'.  PERMISSIONS is a vector of
+permission rules evaluated after the agent's own."
   (opencode-request
    conn
    'POST
-   "/session"
-   :success success
+   "/api/session"
+   :json (append `((location . ((directory . ,(opencode-client--location-directory conn)))))
+                 (when agent `((agent . ,agent)))
+                 (when model `((model . ,model)))
+                 (when permissions `((permissions . ,permissions))))
+   :success (opencode-client--unwrap success)
    :error error))
 
-(cl-defmethod opencode-client-sessions ((conn opencode-connection) &key success error limit roots)
-  "Fetch OpenCode sessions list.
-
-LIMIT restricts the number of returned sessions when provided.  The
-server caps the list at 100 sessions by default, so a higher LIMIT is
-required to retrieve more.  When ROOTS is non-nil, return only sessions
-without a parent."
+(cl-defmethod opencode-client-session-get ((conn opencode-connection) session-id &key success error)
+  "Fetch session info for SESSION-ID."
   (opencode-request
    conn
    'GET
-   "/session"
-   :params (append (when roots '(("roots" . "true")))
-                   (when limit `(("limit" . ,limit))))
-   :success success
+   (opencode-client--path "/api/session/%s" session-id)
+   :success (opencode-client--unwrap success)
    :error error))
 
-(cl-defmethod opencode-client-session-messages ((conn opencode-connection) session-id &key success error limit)
-  "Fetch messages for SESSION-ID.
+(cl-defmethod opencode-client-sessions ((conn opencode-connection) &key success error limit roots project directory)
+  "Fetch OpenCode sessions, newest first.
 
-LIMIT restricts the number of returned messages when provided."
+LIMIT restricts the number of returned sessions.  When ROOTS is non-nil,
+return only sessions without a parent.  PROJECT restricts results to a
+project ID and DIRECTORY to an exact session directory."
   (opencode-request
    conn
    'GET
-   (format "/session/%s/message" session-id)
-   :params (when limit `(("limit" . ,limit)))
-    :success success
-    :error error))
+   "/api/session"
+   :params (append (when roots '(("parentID" . "null")))
+                   (when limit `(("limit" . ,limit)))
+                   (when project `(("project" . ,project)))
+                   (when directory `(("directory" . ,directory))))
+   :success (opencode-client--unwrap success)
+   :error error))
+
+(cl-defmethod opencode-client-session-active ((conn opencode-connection) &key success error)
+  "Fetch the sessions currently running on CONN's server.
+The data is an alist keyed by session ID."
+  (opencode-request
+   conn
+   'GET
+   "/api/session/active"
+   :success (opencode-client--unwrap success)
+   :error error))
+
+(cl-defmethod opencode-client-session-messages ((conn opencode-connection) session-id &key success error)
+  "Fetch every message for SESSION-ID in chronological order.
+
+Pages through the history and calls SUCCESS once with the full list as
+:data."
+  (let ((messages nil))
+    (cl-labels
+        ((fetch (cursor)
+           (opencode-request
+            conn
+            'GET
+            (opencode-client--path "/api/session/%s/message" session-id)
+            :params (append `(("limit" . ,opencode-client--message-page-size))
+                            (if cursor
+                                `(("cursor" . ,cursor))
+                              '(("order" . "asc"))))
+            :success (lambda (&rest args)
+                       (let* ((body (plist-get args :data))
+                              (page (alist-get 'data body))
+                              (next (alist-get 'next (alist-get 'cursor body))))
+                         (setq messages (nconc messages page))
+                         (if (and next (>= (length page) opencode-client--message-page-size))
+                             (fetch next)
+                           (when success
+                             (apply success (plist-put (copy-sequence args)
+                                                       :data messages))))))
+            :error error)))
+      (fetch nil))))
 
 (cl-defmethod opencode-client-session-message ((conn opencode-connection) session-id message-id &key success error)
   "Fetch the single message MESSAGE-ID in SESSION-ID.
 
-Unlike the SSE stream, the response includes full tool output in each
-part's state."
+Unlike the SSE stream, the response includes full tool output."
   (opencode-request
    conn
    'GET
-   (format "/session/%s/message/%s" session-id message-id)
-   :success success
+   (opencode-client--path "/api/session/%s/message/%s" session-id message-id)
+   :success (opencode-client--unwrap success)
    :error error))
 
 (cl-defmethod opencode-client-session-fork ((conn opencode-connection) session-id &key message-id success error)
@@ -142,9 +217,9 @@ MESSAGE-ID is nil, fork the whole session."
   (opencode-request
    conn
    'POST
-   (format "/session/%s/fork" session-id)
-   :json (when message-id `((messageID . ,message-id)))
-   :success success
+   (opencode-client--path "/api/session/%s/fork" session-id)
+   :json (if message-id `((before . ,message-id)) (make-hash-table))
+   :success (opencode-client--unwrap success)
    :error error))
 
 (cl-defmethod opencode-client-session-rename
@@ -153,238 +228,247 @@ MESSAGE-ID is nil, fork the whole session."
   (opencode-request
    conn
    'PATCH
-   (format "/session/%s" session-id)
+   (opencode-client--path "/api/session/%s" session-id)
    :json `((title . ,title))
+   :parser #'opencode-client--no-content
    :success success
    :error error))
 
-(cl-defmethod opencode-client-session-compact
-  ((conn opencode-connection) session-id model &key success error)
-  "Compact SESSION-ID using MODEL.
-
-MODEL is a cons (PROVIDER-ID . MODEL-ID)."
+(cl-defmethod opencode-client-session-compact ((conn opencode-connection) session-id &key success error)
+  "Queue compaction of SESSION-ID."
   (opencode-request
    conn
    'POST
-   (format "/session/%s/summarize" session-id)
-   :json `((providerID . ,(car model))
-           (modelID . ,(cdr model))
-           (auto . :json-false))
-   :parser (lambda () nil)
-   :timeout nil
+   (opencode-client--path "/api/session/%s/compact" session-id)
+   :json (make-hash-table)
+   :success success
+   :error error))
+
+(cl-defmethod opencode-client-session-switch-agent
+  ((conn opencode-connection) session-id agent &key success error)
+  "Switch SESSION-ID to AGENT for subsequent turns."
+  (opencode-request
+   conn
+   'POST
+   (opencode-client--path "/api/session/%s/agent" session-id)
+   :json `((agent . ,agent))
+   :parser #'opencode-client--no-content
+   :success success
+   :error error))
+
+(cl-defmethod opencode-client-session-switch-model
+  ((conn opencode-connection) session-id model &key success error)
+  "Switch SESSION-ID to MODEL for subsequent turns.
+
+MODEL is a model reference alist with `providerID', `id', and optional
+`variant'."
+  (opencode-request
+   conn
+   'POST
+   (opencode-client--path "/api/session/%s/model" session-id)
+   :json `((model . ,model))
+   :parser #'opencode-client--no-content
    :success success
    :error error))
 
 (cl-defmethod opencode-client-agents ((conn opencode-connection) &key success error)
   "Fetch available agents from the server."
-  (opencode-request
-   conn
-   'GET
-   "/agent"
-   :success success
-   :error error))
+  (opencode-request conn 'GET "/api/agent"
+                    :success (opencode-client--unwrap success)
+                    :error error))
 
-(cl-defmethod opencode-client-providers ((conn opencode-connection) &key success error)
-  "Fetch available providers from the server."
-  (opencode-request
-   conn
-   'GET
-   "/provider"
-   :success success
-   :error error))
+(cl-defmethod opencode-client-models ((conn opencode-connection) &key success error)
+  "Fetch models available from connected providers."
+  (opencode-request conn 'GET "/api/model"
+                    :success (opencode-client--unwrap success)
+                    :error error))
+
+(cl-defmethod opencode-client-integrations ((conn opencode-connection) &key success error)
+  "Fetch provider integrations and their authentication methods."
+  (opencode-request conn 'GET "/api/integration"
+                    :success (opencode-client--unwrap success)
+                    :error error))
 
 (cl-defmethod opencode-client-commands ((conn opencode-connection) &key success error)
   "Fetch available commands from the server."
+  (opencode-request conn 'GET "/api/command"
+                    :success (opencode-client--unwrap success)
+                    :error error))
+
+(cl-defmethod opencode-client-integration-connect-key
+  ((conn opencode-connection) integration-id key &key answer success error)
+  "Store KEY as the credential for INTEGRATION-ID.
+ANSWER is an alist answering the method's form, when it has one."
+  (opencode-request
+   conn
+   'POST
+   (opencode-client--path "/api/integration/%s/connect/key" integration-id)
+   :json (append `((key . ,key)) (when answer `((answer . ,answer))))
+   :parser #'opencode-client--no-content
+   :success success
+   :error error))
+
+(cl-defmethod opencode-client-integration-oauth-connect
+  ((conn opencode-connection) integration-id method-id &key answer success error)
+  "Start OAuth METHOD-ID for INTEGRATION-ID.
+ANSWER is an alist answering the method's form, when it has one.  The
+data describes the attempt: its ID, URL, instructions, and mode."
+  (opencode-request
+   conn
+   'POST
+   (opencode-client--path "/api/integration/%s/connect/oauth" integration-id)
+   :json (append `((methodID . ,method-id)) (when answer `((answer . ,answer))))
+   :success (opencode-client--unwrap success)
+   :error error))
+
+(cl-defmethod opencode-client-integration-oauth-status
+  ((conn opencode-connection) integration-id attempt-id &key success error)
+  "Fetch the status of OAuth ATTEMPT-ID for INTEGRATION-ID."
   (opencode-request
    conn
    'GET
-   "/command"
-   :success success
+   (opencode-client--path "/api/integration/%s/connect/oauth/%s" integration-id attempt-id)
+   :success (opencode-client--unwrap success)
    :error error))
 
-(cl-defmethod opencode-client-instance-dispose ((conn opencode-connection) &key success error)
-  "Dispose the current OpenCode instance for CONN."
+(cl-defmethod opencode-client-integration-oauth-complete
+  ((conn opencode-connection) integration-id attempt-id &key code success error)
+  "Complete code-based OAuth ATTEMPT-ID for INTEGRATION-ID with CODE."
   (opencode-request
    conn
    'POST
-   "/instance/dispose"
-   :parser (lambda () nil)
+   (opencode-client--path "/api/integration/%s/connect/oauth/%s/complete"
+                          integration-id attempt-id)
+   :json (if code `((code . ,code)) (make-hash-table))
+   :parser #'opencode-client--no-content
+   :timeout nil
    :success success
    :error error))
 
-(cl-defmethod opencode-client-provider-auth-methods ((conn opencode-connection) &key success error)
-  "Fetch available auth methods for all providers."
+(cl-defmethod opencode-client-pending-permissions ((conn opencode-connection) &key success error)
+  "Fetch pending permission requests for every session in CONN's directory."
+  (opencode-request conn 'GET "/api/permission/request"
+                    :success (opencode-client--unwrap success)
+                    :error error))
+
+(cl-defmethod opencode-client-pending-forms ((conn opencode-connection) &key success error)
+  "Fetch pending forms for every session in CONN's directory."
+  (opencode-request conn 'GET "/api/form"
+                    :success (opencode-client--unwrap success)
+                    :error error))
+
+(cl-defmethod opencode-client-session-inbox ((conn opencode-connection) session-id &key success error)
+  "Fetch the inputs queued for SESSION-ID that it has not received yet."
   (opencode-request
    conn
    'GET
-   "/provider/auth"
-   :success success
+   (opencode-client--path "/api/session/%s/inbox" session-id)
+   :success (opencode-client--unwrap success)
    :error error))
 
-(cl-defmethod opencode-client-provider-oauth-authorize
-  ((conn opencode-connection) provider-id method-index &key success error)
-  "Start OAuth authorization for PROVIDER-ID using METHOD-INDEX."
+(cl-defmethod opencode-client-session-prompt
+  ((conn opencode-connection) session-id text &key agents success error)
+  "Send TEXT to SESSION-ID.
+
+AGENTS is a list of agent names mentioned in TEXT; the server delegates to
+them."
   (opencode-request
    conn
    'POST
-   (format "/provider/%s/oauth/authorize" provider-id)
-   :json `((method . ,method-index))
-   :success success
+   (opencode-client--path "/api/session/%s/prompt" session-id)
+   :json (append `((text . ,text))
+                 (when agents
+                   `((agents . ,(apply #'vector
+                                       (mapcar (lambda (name) `((name . ,name)))
+                                               agents))))))
+   :success (opencode-client--unwrap success)
    :error error))
 
-(cl-defmethod opencode-client-provider-oauth-callback
-  ((conn opencode-connection) provider-id method-index &key code success error)
-  "Complete OAuth callback for PROVIDER-ID using METHOD-INDEX.
-
-CODE is the authorization code for the \"code\" flow."
-  (let ((payload `((method . ,method-index))))
-    (when code
-      (setq payload (append payload `((code . ,code)))))
-    (opencode-request
-     conn
-     'POST
-     (format "/provider/%s/oauth/callback" provider-id)
-     :json payload
-     :timeout nil
-     :success success
-     :error error)))
-
-(cl-defmethod opencode-client-auth-set
-  ((conn opencode-connection) provider-id auth-info &key success error)
-  "Set auth credentials for PROVIDER-ID.
-
-AUTH-INFO is an alist representing the auth payload."
-  (opencode-request
-   conn
-   'PUT
-   (format "/auth/%s" provider-id)
-   :json auth-info
-   :success success
-   :error error))
-
-(cl-defmethod opencode-client-session-prompt-async
-  ((conn opencode-connection) session-id parts &key success error agent model variant)
-  "Send PARTS to SESSION-ID asynchronously.
-
-PARTS is a list of message part objects for the request body. AGENT and
-VARIANT are included when provided. MODEL is a cons (PROVIDER-ID . MODEL-ID)
-included when provided."
-  (opencode-request
-    conn
-    'POST
-    (format "/session/%s/prompt_async" session-id)
-    :json (append (when agent `((agent . ,agent)))
-                  (when variant `((variant . ,variant)))
-                  (when model `((model . ((providerID . ,(car model))
-                                          (modelID . ,(cdr model))))))
-                  `((parts . ,parts)))
-   :parser (lambda () nil)
-   :success success
-   :error error))
-
-(cl-defmethod opencode-client-session-abort ((conn opencode-connection) session-id &key success error)
-  "Abort the active prompt for SESSION-ID."
+(cl-defmethod opencode-client-session-interrupt ((conn opencode-connection) session-id &key success error)
+  "Interrupt the active execution of SESSION-ID."
   (opencode-request
    conn
    'POST
-   (format "/session/%s/abort" session-id)
-   :parser (lambda () nil)
+   (opencode-client--path "/api/session/%s/interrupt" session-id)
    :success success
    :error error))
 
-(cl-defmethod opencode-client-permission-reply ((conn opencode-connection) request-id reply &key message success error)
-  "Reply to permission REQUEST-ID with REPLY.
-
-MESSAGE is sent when provided."
-  (let ((payload `((reply . ,reply))))
-    (when message
-      (setq payload (append payload `((message . ,message)))))
-    (opencode-request
-     conn
-     'POST
-     (format "/permission/%s/reply" request-id)
-     :json payload
-     :success success
-     :error error)))
-
-(defun opencode--vectorize-answers (answers)
-  "Return ANSWERS as a vector of answer vectors."
-  (let ((items (cond
-                ((vectorp answers) (append answers nil))
-                ((listp answers) answers)
-                (t nil))))
-    (apply #'vector
-           (mapcar (lambda (answer)
-                     (cond
-                      ((vectorp answer) answer)
-                      ((listp answer) (vconcat answer))
-                      ((stringp answer) (vector answer))
-                      (t (vector))))
-                   items))))
-
-(cl-defmethod opencode-client-question-reply ((conn opencode-connection) request-id answers &key success error)
-  "Reply to question REQUEST-ID with ANSWERS.
-
-ANSWERS is a list of string lists aligned to the requested questions."
+(cl-defmethod opencode-client-session-wait ((conn opencode-connection) session-id &key success error)
+  "Wait until SESSION-ID becomes idle."
   (opencode-request
    conn
    'POST
-   (format "/question/%s/reply" request-id)
-   :json `((answers . ,(opencode--vectorize-answers answers)))
+   (opencode-client--path "/api/experimental/session/%s/wait" session-id)
+   :parser #'opencode-client--no-content
+   :timeout nil
    :success success
    :error error))
 
-(cl-defmethod opencode-client-question-reject ((conn opencode-connection) request-id &key success error)
-  "Reject the question REQUEST-ID."
+(cl-defmethod opencode-client-permission-reply
+  ((conn opencode-connection) session-id request-id decision &key message success error)
+  "Reply to permission REQUEST-ID in SESSION-ID with DECISION.
+
+DECISION is \"once\", \"always\", or \"reject\".  MESSAGE is sent when
+provided."
   (opencode-request
    conn
    'POST
-   (format "/question/%s/reject" request-id)
-   :parser (lambda () nil)
+   (opencode-client--path "/api/session/%s/permission/%s/reply" session-id request-id)
+   :json (append `((decision . ,decision))
+                 (when message `((message . ,message))))
+   :parser #'opencode-client--no-content
+   :success success
+   :error error))
+
+(cl-defmethod opencode-client-form-reply
+  ((conn opencode-connection) session-id form-id answer &key success error)
+  "Answer FORM-ID in SESSION-ID with ANSWER.
+ANSWER is an alist mapping field keys to values."
+  (opencode-request
+   conn
+   'POST
+   (opencode-client--path "/api/session/%s/form/%s/reply" session-id form-id)
+   :json `((answer . ,(or answer (make-hash-table))))
+   :parser #'opencode-client--no-content
+   :success success
+   :error error))
+
+(cl-defmethod opencode-client-form-cancel
+  ((conn opencode-connection) session-id form-id &key success error)
+  "Dismiss FORM-ID in SESSION-ID without answering it."
+  (opencode-request
+   conn
+   'DELETE
+   (opencode-client--path "/api/session/%s/form/%s" session-id form-id)
+   :parser #'opencode-client--no-content
    :success success
    :error error))
 
 (cl-defmethod opencode-client-session-command
-  ((conn opencode-connection) session-id command arguments
-   &key success error agent model variant)
-  "Send COMMAND with ARGUMENTS to SESSION-ID.
-
-MODEL is a \"provider/model\" string included when provided. VARIANT is sent
-when provided."
-  (let ((payload `((command . ,command)
-                   (arguments . ,(or arguments "")))))
-    (when agent
-      (setq payload (append payload `((agent . ,agent)))))
-    (when variant
-      (setq payload (append payload `((variant . ,variant)))))
-    (when model
-      (setq payload (append payload `((model . ,model)))))
-    (opencode-request
-     conn
-     'POST
-     (format "/session/%s/command" session-id)
-     :json payload
-     :parser (lambda () nil)
-     :timeout nil
-     :success success
-     :error error)))
-
-(cl-defmethod opencode-client-session-shell
-  ((conn opencode-connection) session-id command
-   &key success error agent model)
-  "Execute shell COMMAND in SESSION-ID.
-
-AGENT names the agent to use. MODEL is a cons (PROVIDER-ID . MODEL-ID)
-included when provided."
+  ((conn opencode-connection) session-id command arguments &key success error)
+  "Run COMMAND with ARGUMENTS in SESSION-ID."
   (opencode-request
    conn
    'POST
-   (format "/session/%s/shell" session-id)
-   :json (append `((command . ,command))
-                 (when agent `((agent . ,agent)))
-                 (when model `((model . ((providerID . ,(car model))
-                                         (modelID . ,(cdr model)))))))
-   :parser (lambda () nil)
+   (opencode-client--path "/api/session/%s/command" session-id)
+   :json `((name . ,command)
+           (text . ,(or arguments "")))
+   :parser #'opencode-client--no-content
+   :timeout nil
+   :success success
+   :error error))
+
+(cl-defmethod opencode-client-session-shell
+  ((conn opencode-connection) session-id command &key success error)
+  "Execute shell COMMAND in SESSION-ID.
+The server answers once the command finishes, so there is no timeout."
+  (opencode-request
+   conn
+   'POST
+   (opencode-client--path "/api/session/%s/shell" session-id)
+   :json `((command . ,command))
+   :parser #'opencode-client--no-content
+   :timeout nil
    :success success
    :error error))
 

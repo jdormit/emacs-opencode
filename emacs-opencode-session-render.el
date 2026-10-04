@@ -22,6 +22,7 @@ deleted on every status update.")
   "Marker for the end of the inline retry banner region.")
 
 (declare-function opencode--ensure-session-buffer "emacs-opencode")
+(declare-function opencode-session--message-from-info "emacs-opencode-session-mode")
 
 (defcustom opencode-session-show-reasoning nil
   "When non-nil, display reasoning/thinking blocks in the session buffer."
@@ -161,7 +162,9 @@ Closes the drawer for PART-ID if the request fails."
                   (when (buffer-live-p buffer)
                     (with-current-buffer buffer
                       (opencode-session--store-tool-outputs
-                       message (alist-get 'parts (plist-get args :data)))
+                       message
+                       (opencode-message-parts
+                        (opencode-session--message-from-info (plist-get args :data))))
                       (opencode-session--render-message message))))
        :error (lambda (&rest _args)
                 (when (buffer-live-p buffer)
@@ -172,14 +175,16 @@ Closes the drawer for PART-ID if the request fails."
 
 (defun opencode-session--store-tool-outputs (message parts)
   "Copy tool output from fetched PARTS into the matching parts of MESSAGE.
+PARTS is the parts alist of the same message fetched from the server.
 Completed parts the server returns without output are stored as empty
 so their drawers stop showing the loading placeholder."
-  (dolist (raw (opencode-session--normalize-items parts))
-    (let* ((state (alist-get 'state raw))
+  (dolist (entry parts)
+    (let* ((fetched (cdr entry))
+           (state (opencode-message-part-state fetched))
            (output (alist-get 'output state))
-           (part (opencode-session--find-part message (alist-get 'id raw))))
+           (part (opencode-session--find-part message (car entry))))
       (when (and part
-                 (equal (alist-get 'type raw) "tool")
+                 (equal (opencode-message-part-type fetched) "tool")
                  (equal (alist-get 'status state) "completed"))
         (setf (opencode-message-part-state part)
               (cons (cons 'output (if (stringp output) output ""))
@@ -580,15 +585,14 @@ properties and the user prefix indicator."
       base)))
 
 (defun opencode-session--message-error-text (message)
-  "Return a formatted assistant error string for MESSAGE, or nil."
+  "Return a formatted assistant error string for MESSAGE, or nil.
+Interruptions requested by the user are not errors and show nothing."
   (when (and (string= (opencode-message-role message) "assistant")
              (consp (opencode-message-error message)))
     (let* ((error-info (opencode-message-error message))
-           (name (alist-get 'name error-info))
-           (data (alist-get 'data error-info))
-           (detail (and (listp data)
-                        (opencode-session--nonempty-string (alist-get 'message data)))))
-      (unless (string= name "MessageAbortedError")
+           (type (alist-get 'type error-info))
+           (detail (opencode-session--nonempty-string (alist-get 'message error-info))))
+      (unless (and (stringp type) (string-match-p "abort\\|interrupt\\|cancel" type))
         (propertize (format "Error: %s" (or detail "An error occurred"))
                     'opencode-part-type "assistant-text"
                     'face 'error)))))
@@ -599,6 +603,11 @@ properties and the user prefix indicator."
    ((string-match-p "\n\n\\'" output) output)
    ((string-suffix-p "\n" output) (concat output "\n"))
    (t (concat output "\n\n"))))
+
+(defconst opencode-session--block-tools
+  '("todowrite" "todoread" "edit" "write" "patch" "apply_patch"
+    "shell" "bash" "subagent" "task")
+  "Tools rendered as standalone blocks separated by blank lines.")
 
 (defun opencode-session--render-message-parts (message parts)
   "Render PARTS for MESSAGE into a string."
@@ -611,9 +620,7 @@ properties and the user prefix indicator."
              (tool (opencode-message-part-tool part))
              (rendered (opencode-session--render-message-part message part))
              (tool-part (string= part-type "tool"))
-             (block-tool (and tool-part (member tool '("todowrite" "todoread"
-                                                        "edit" "apply_patch"
-                                                        "bash" "task")))))
+             (block-tool (and tool-part (member tool opencode-session--block-tools))))
         (when (and rendered
                    (not (and (string= part-type "compaction")
                              rendered-compaction)))
@@ -624,7 +631,7 @@ properties and the user prefix indicator."
           (when after-drawer
             (setq output (opencode-session--ensure-blank-line output)))
           (cond
-           ((or (member part-type '("text" "reasoning" "compaction")) block-tool)
+           ((or (member part-type '("text" "reasoning" "compaction" "loaded")) block-tool)
             (when (and (not (string-empty-p output))
                        (not (string-match-p "\n\n+\\'" output)))
               (setq output (concat output "\n")))
@@ -665,22 +672,37 @@ properties and the user prefix indicator."
        (opencode-session--tool-part-line part))
       ((string= part-type "compaction")
        (opencode-session--compaction-line part))
+      ((string= part-type "loaded")
+       (opencode-session--loaded-line part))
       (t nil))))
+
+(defun opencode-session--loaded-line (part)
+  "Render the instruction files PART reports as loaded."
+  (let ((paths (cl-remove-if-not
+                #'stringp
+                (opencode-session--normalize-items
+                 (alist-get 'paths (opencode-message-part-metadata part))))))
+    (when paths
+      (propertize (mapconcat (lambda (path)
+                               (format "↳ Loaded %s" (opencode-session--display-path path)))
+                             paths "\n")
+                  'opencode-part-type "tool"
+                  'face 'opencode-session-tool-face))))
 
 (defun opencode-session--compaction-line (part)
   "Render a compaction PART as a boundary line."
   (let* ((automatic (opencode-message-part-auto part))
-         (overflow (opencode-message-part-overflow part))
-         (tail-start-id (opencode-message-part-tail-start-id part))
-         (complete (or tail-start-id (opencode-message-part-time-end part)))
-         (label (cond
-                 ((not complete) "Session compacting...")
-                 (automatic "Session auto-compacted")
-                 (t "Session compacted")))
-         (detail (cond
-                  ((not complete) "Earlier messages are being summarized for future context.")
-                  (overflow "Earlier messages were summarized after context overflow and are no longer sent verbatim.")
-                  (t "Earlier messages were summarized and are no longer sent verbatim."))))
+         (metadata (opencode-message-part-metadata part))
+         (status (alist-get 'status metadata))
+         (label (pcase status
+                  ("running" "Session compacting...")
+                  ("failed" "Session compaction failed")
+                  (_ (if automatic "Session auto-compacted" "Session compacted"))))
+         (detail (pcase status
+                   ("running" "Earlier messages are being summarized for future context.")
+                   ("failed" (or (opencode-session--nonempty-string (alist-get 'error metadata))
+                                 "Earlier messages are still sent verbatim."))
+                   (_ "Earlier messages were summarized and are no longer sent verbatim."))))
     (propertize (format "%s\n%s" label detail)
                 'opencode-part-type "compaction"
                 'face 'opencode-session-compaction-face)))
@@ -704,7 +726,7 @@ properties and the user prefix indicator."
          (extra (opencode-session--tool-extra-block tool input metadata part))
          (is-diff (and extra
                        (not (string-empty-p (string-trim extra)))
-                       (member tool '("edit" "apply_patch"))))
+                       (member tool '("edit" "write" "patch" "apply_patch"))))
          (drawer (opencode-session--tool-drawer-available-p part))
          (part-id (opencode-message-part-id part))
          (open (and drawer (opencode-session--tool-drawer-open-p part-id))))
@@ -766,15 +788,15 @@ STATUS and STATE provide additional context for fallbacks."
     (opencode-session--tool-grep input metadata))
    ((string= tool "read")
     (opencode-session--tool-read input))
-   ((string= tool "bash")
+   ((member tool '("shell" "bash"))
     (opencode-session--tool-bash input metadata))
    ((string= tool "edit")
     (opencode-session--tool-edit-write "Edit" input metadata))
-   ((string= tool "apply_patch")
+   ((member tool '("patch" "apply_patch"))
      (opencode-session--tool-apply-patch input metadata status state))
    ((string= tool "write")
     (opencode-session--tool-edit-write "Write" input metadata))
-   ((string= tool "task")
+   ((member tool '("subagent" "task"))
     (opencode-session--tool-task input metadata))
    ((string= tool "webfetch")
     (opencode-session--tool-webfetch input))
@@ -841,7 +863,7 @@ Returns a multi-line string."
 
 (defun opencode-session--tool-read (input)
   "Render a summary line for the read tool."
-  (let* ((file-path (or (alist-get 'filePath input) ""))
+  (let* ((file-path (or (alist-get 'path input) (alist-get 'filePath input) ""))
          (offset (alist-get 'offset input))
          (limit (alist-get 'limit input))
          (args (opencode-session--format-args
@@ -864,18 +886,41 @@ Returns a multi-line string."
   "Render a summary line for edit or write LABEL.
 
 INPUT and METADATA may include the file path."
-  (let* ((file-path (or (alist-get 'filePath input)
+  (let* ((file-path (or (alist-get 'path input)
+                        (alist-get 'filePath input)
                         (alist-get 'filepath metadata)
                         ""))
          (path (or (opencode-session--display-path file-path) "")))
     (format "→ %s %s" label path)))
 
-(defun opencode-session--tool-apply-patch (_input _metadata status state)
-  "Render a summary line for patch tool calls."
-  (let ((title (opencode-session--nonempty-string (alist-get 'title state))))
-    (if (and title (string= status "completed"))
-        title
-      "→ Patch")))
+(defun opencode-session--tool-apply-patch (_input metadata status state)
+  "Render a summary line for patch tool calls.
+The line lists the patched files from METADATA when the call completed."
+  (let ((title (opencode-session--nonempty-string (alist-get 'title state)))
+        (files (opencode-session--diff-files metadata)))
+    (cond
+     ((and title (string= status "completed")) title)
+     (files
+      (format "→ Patch %s"
+              (mapconcat (lambda (file)
+                           (opencode-session--display-path (alist-get 'file file)))
+                         files ", ")))
+     (t "→ Patch"))))
+
+(defun opencode-session--diff-files (metadata)
+  "Return the file diffs recorded in tool METADATA."
+  (when (listp metadata)
+    (cl-remove-if-not (lambda (file) (stringp (alist-get 'file file)))
+                      (opencode-session--normalize-items (alist-get 'files metadata)))))
+
+(defun opencode-session--tool-diff (metadata)
+  "Return the diff text recorded in edit or patch tool METADATA."
+  (when (listp metadata)
+    (or (opencode-session--nonempty-string (alist-get 'diff metadata))
+        (opencode-session--nonempty-string
+         (mapconcat (lambda (file) (or (alist-get 'patch file) ""))
+                    (opencode-session--diff-files metadata)
+                    "")))))
 
 (defun opencode-session--tool-extra-block (tool input metadata &optional part)
   "Return extra block content for TOOL from INPUT or METADATA.
@@ -883,10 +928,9 @@ PART is the full message part, used by tools that inspect its state."
   (cond
    ((string= tool "read")
     (opencode-session--read-loaded-block metadata part))
-   ((member tool '("edit" "apply_patch"))
-    (when (listp metadata)
-      (opencode-session--nonempty-string (alist-get 'diff metadata))))
-   ((string= tool "bash")
+   ((member tool '("edit" "write" "patch" "apply_patch"))
+    (opencode-session--tool-diff metadata))
+   ((member tool '("shell" "bash"))
     (opencode-session--bash-extra-block input metadata))))
 
 (defun opencode-session--read-loaded-block (metadata part)
@@ -925,27 +969,32 @@ The command output lives in the tool's drawer."
            return item))
 
 (defun opencode-session--task-tool-line (item)
-  "Return a formatted line for tool ITEM."
+  "Return a formatted line for subagent tool ITEM."
   (let* ((tool (alist-get 'tool item))
          (state (alist-get 'state item))
          (status (alist-get 'status state))
-         (title (and (string= status "completed")
-                     (alist-get 'title state)))
-         (tool-label (and tool (capitalize tool)))
-         (title-text (and title (not (string-empty-p title)) title)))
-    (when tool-label
-      (string-join (delq nil (list tool-label title-text)) " "))))
+         (title (and (equal status "completed")
+                     (opencode-session--nonempty-string (alist-get 'title state)))))
+    (when tool
+      (if title
+          (format "%s %s" (capitalize tool) title)
+        (car (split-string
+              (opencode-session--tool-summary tool (alist-get 'input state)
+                                              (alist-get 'metadata state) status state)
+              "\n"))))))
 
 (defun opencode-session--tool-task (input metadata)
   "Render a summary line for the task tool.
 Uses live subagent tool tracking data when available."
-  (let* ((subagent (or (alist-get 'subagent_type input)
+  (let* ((subagent (or (alist-get 'agent input)
+                       (alist-get 'subagent_type input)
                        (alist-get 'subagent-type input)
                        "task"))
          (description (or (alist-get 'description input)
                           (alist-get 'title metadata)))
          (agent-label (format "%s Task" (capitalize subagent)))
-         (session-id (alist-get 'sessionId metadata))
+         (session-id (or (alist-get 'sessionID metadata)
+                         (alist-get 'sessionId metadata)))
          (tools (and session-id
                      (opencode-session--subagent-tools-for session-id)))
          (count (length tools))
@@ -997,12 +1046,19 @@ INPUT is used to extract primitive parameters for display."
     value))
 
 (defun opencode-session--display-path (path)
-  "Return PATH formatted for display."
+  "Return PATH formatted for display.
+Paths inside the session directory are shown relative to it.  The server
+reports resolved paths, so the directory is compared after resolving
+symlinks too."
   (when (and path (stringp path))
     (let ((directory (and opencode-session--connection
                           (opencode-connection-directory opencode-session--connection))))
       (if (and directory (file-name-absolute-p path))
-          (file-relative-name path directory)
+          (let ((relative (cl-find-if-not
+                           (lambda (candidate) (string-prefix-p ".." candidate))
+                           (list (file-relative-name path directory)
+                                 (file-relative-name path (file-truename directory))))))
+            (or relative (abbreviate-file-name path)))
         path))))
 
 (defun opencode-session--format-location (path)

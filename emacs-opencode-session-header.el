@@ -8,6 +8,7 @@
 (require 'emacs-opencode-session)
 
 (declare-function opencode-session--ensure-providers "emacs-opencode-session-model")
+(declare-function opencode-session--provider-model-info "emacs-opencode-session-model")
 (declare-function opencode-session--render-retry-banner "emacs-opencode-session-render")
 
 (defcustom opencode-session-spinner-frames
@@ -197,8 +198,14 @@ Most recently used first."
     result))
 
 (defun opencode-session--header-cost-string ()
-  "Return total assistant cost formatted as currency."
-  (let ((total (opencode-session--assistant-cost-total)))
+  "Return the session's total cost formatted as currency.
+The server's session total includes title and compaction requests; the
+sum of assistant messages is the fallback."
+  (let ((total (or (let ((cost (and opencode-session--session
+                                    (alist-get 'cost (opencode-session-info
+                                                      opencode-session--session)))))
+                     (and (numberp cost) cost))
+                   (opencode-session--assistant-cost-total))))
     (when (and (numberp total)
                (or (> total 0)
                    (opencode-session--has-assistant-messages-p)))
@@ -207,19 +214,15 @@ Most recently used first."
 (defun opencode-session--has-assistant-messages-p ()
   "Return non-nil when session has assistant messages."
   (cl-loop for message in opencode-session--messages
-           for info = (opencode-message-info message)
-           for role = (alist-get 'role info)
-           when (string= role "assistant")
+           when (equal (opencode-message-role message) "assistant")
            return t))
 
 (defun opencode-session--assistant-cost-total ()
   "Return the total cost for assistant messages in the session."
   (let ((total 0.0))
     (dolist (message opencode-session--messages total)
-      (let* ((info (opencode-message-info message))
-             (role (alist-get 'role info))
-             (cost (alist-get 'cost info)))
-        (when (and (string= role "assistant") (numberp cost))
+      (let ((cost (alist-get 'cost (opencode-message-info message))))
+        (when (and (equal (opencode-message-role message) "assistant") (numberp cost))
           (setq total (+ total cost)))))))
 
 (defun opencode-session--header-context-string ()
@@ -238,10 +241,9 @@ Most recently used first."
   "Return the last assistant message info with output tokens."
   (cl-loop for message in (reverse opencode-session--messages)
            for info = (opencode-message-info message)
-           for role = (alist-get 'role info)
            for tokens = (alist-get 'tokens info)
            for output = (alist-get 'output tokens)
-           when (and (string= role "assistant")
+           when (and (equal (opencode-message-role message) "assistant")
                      (numberp output)
                      (> output 0))
            return info))
@@ -276,8 +278,9 @@ Most recently used first."
 (defun opencode-session--context-percent (info total)
   "Return context usage percent string for INFO and TOTAL tokens."
   (when (and opencode-session--connection (numberp total))
-    (let* ((provider-id (alist-get 'providerID info))
-           (model-id (alist-get 'modelID info))
+    (let* ((model (alist-get 'model info))
+           (provider-id (alist-get 'providerID model))
+           (model-id (alist-get 'id model))
            (limit (opencode-session--model-context-limit provider-id model-id)))
       (when (and (numberp limit) (> limit 0))
         (number-to-string (round (* (/ (float total) limit) 100)))))))
@@ -285,16 +288,9 @@ Most recently used first."
 (defun opencode-session--model-context-limit (provider-id model-id)
   "Return the context limit for PROVIDER-ID and MODEL-ID."
   (when (and opencode-session--connection provider-id model-id)
-    (let ((providers (opencode-connection-providers opencode-session--connection)))
-      (when (and providers (listp providers))
-        (when-let* ((provider (cl-find provider-id providers
-                                       :key (lambda (item) (alist-get 'id item))
-                                       :test #'string=))
-                    (models (alist-get 'models provider))
-                    (model (alist-get model-id models nil nil #'string=))
-                    (limit (alist-get 'limit model))
-                    (context (alist-get 'context limit)))
-          context)))))
+    (alist-get 'context
+               (alist-get 'limit (opencode-session--provider-model-info
+                                  provider-id model-id opencode-session--connection)))))
 
 (defun opencode-session--header-status-label (status)
   "Return STATUS label for the header line."

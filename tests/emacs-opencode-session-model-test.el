@@ -1,6 +1,7 @@
 ;;; emacs-opencode-session-model-test.el --- Tests for model selection  -*- lexical-binding: t; -*-
 
 (require 'ert)
+(require 'emacs-opencode-session-mode)
 (require 'emacs-opencode-session-model)
 
 ;;; normalize-agents
@@ -19,13 +20,10 @@
   "Normalize alist agents with mode and hidden."
   (let ((data '(((id . "plan") (mode . "primary") (hidden . nil))
                 ((id . "code") (mode . "primary") (hidden . nil))
+                ((id . "both") (mode . "all") (hidden . nil))
                 ((id . "hidden") (mode . "primary") (hidden . t))
-                ((id . "secondary") (mode . "secondary") (hidden . nil)))))
-    (let ((result (opencode-session--normalize-agents data)))
-      (should (member "plan" result))
-      (should (member "code" result))
-      (should-not (member "hidden" result))
-      (should-not (member "secondary" result)))))
+                ((id . "secondary") (mode . "subagent") (hidden . nil)))))
+    (should (equal (opencode-session--normalize-agents data) '("plan" "code" "both")))))
 
 (ert-deftest test-opencode-model/normalize-agents-nil ()
   "Return nil for nil."
@@ -38,43 +36,21 @@
 
 ;;; variant-keys
 
-(ert-deftest test-opencode-model/variant-keys-alist ()
-  "Extract variant names from alist."
-  (let ((result (opencode-session--variant-keys
-                 '((fast . nil)
-                   (slow . nil)
-                   (disabled . ((disabled . t)))))))
-    (should (member "fast" result))
-    (should (member "slow" result))
-    (should-not (member "disabled" result))))
+(ert-deftest test-opencode-model/variant-keys-in-server-order ()
+  "Variant names come from the variant list, in server order."
+  (should (equal (opencode-session--variant-keys
+                  '(((id . "low") (settings . ((reasoningEffort . "low"))))
+                    ((id . "high"))
+                    ((id . "low"))))
+                 '("low" "high"))))
 
-(ert-deftest test-opencode-model/variant-keys-hash-table ()
-  "Extract variant names from hash table."
-  (let ((ht (make-hash-table :test 'equal)))
-    (puthash "fast" nil ht)
-    (puthash "slow" nil ht)
-    (puthash "off" '((disabled . t)) ht)
-    (let ((result (opencode-session--variant-keys ht)))
-      (should (member "fast" result))
-      (should (member "slow" result))
-      (should-not (member "off" result)))))
-
-(ert-deftest test-opencode-model/variant-keys-sorted ()
-  "Variant keys are sorted alphabetically."
-  (let ((result (opencode-session--variant-keys
-                 '((zebra . nil) (alpha . nil) (middle . nil)))))
-    (should (equal result '("alpha" "middle" "zebra")))))
+(ert-deftest test-opencode-model/variant-keys-vector ()
+  "Variant vectors are accepted."
+  (should (equal (opencode-session--variant-keys [((id . "max"))]) '("max"))))
 
 (ert-deftest test-opencode-model/variant-keys-nil ()
   "Return nil for nil."
   (should (null (opencode-session--variant-keys nil))))
-
-(ert-deftest test-opencode-model/variant-keys-symbol-keys ()
-  "Handle symbol keys in alist."
-  (let ((result (opencode-session--variant-keys
-                 '((fast . nil) (slow . nil)))))
-    (should (member "fast" result))
-    (should (member "slow" result))))
 
 ;;; model-candidate-tier
 
@@ -126,43 +102,105 @@
   (let ((candidate (list :provider-id "x" :model-id "y")))
     (should (= (opencode-session--model-candidate-rank candidate 2 nil) 0))))
 
-;;; provider-model-items
+;;; model catalog
 
-(ert-deftest test-opencode-model/provider-model-items-list ()
-  "Extract model items from a list."
-  (let ((provider '((id . "anthropic")
-                    (models . (("claude-3" . ((name . "Claude 3")))
-                               ("claude-2" . ((name . "Claude 2"))))))))
-    (let ((items (opencode-session--provider-model-items provider)))
-      (should (= (length items) 2))
-      (should (equal (caar items) "claude-3")))))
+(defun opencode-model-test--connection ()
+  "Return a connection with a small model and integration catalog."
+  (opencode-connection-create
+   :models '(((id . "gpt") (providerID . "openai") (name . "GPT") (status . "active")
+              (enabled . t) (variants . (((id . "low")) ((id . "high"))))
+              (limit . ((context . 1000))))
+             ((id . "old") (providerID . "openai") (name . "Old") (status . "deprecated")
+              (enabled . t))
+             ((id . "off") (providerID . "openai") (name . "Off") (status . "active")
+              (enabled . nil)))
+   :integrations '(((id . "openai") (name . "OpenAI")
+                    (methods . (((type . "key")) ((type . "env") (names . ("OPENAI_API_KEY")))))
+                    (connections . (((type . "env")))))
+                   ((id . "anthropic") (name . "Anthropic")
+                    (methods . (((type . "key")))) (connections . nil))
+                   ((id . "envonly") (name . "Env Only")
+                    (methods . (((type . "env") (names . ("X"))))) (connections . nil)))))
 
-(ert-deftest test-opencode-model/provider-model-items-hash-table ()
-  "Extract model items from a hash table."
-  (let ((ht (make-hash-table :test 'equal)))
-    (puthash "claude-3" '((name . "Claude 3")) ht)
-    (let ((provider `((id . "anthropic") (models . ,ht))))
-      (let ((items (opencode-session--provider-model-items provider)))
-        (should (= (length items) 1))
-        (should (equal (caar items) "claude-3"))))))
+(ert-deftest test-opencode-model/provider-model-info ()
+  "Model metadata is found by provider and model ID."
+  (let ((conn (opencode-model-test--connection)))
+    (should (equal (alist-get 'name (opencode-session--provider-model-info "openai" "gpt" conn))
+                   "GPT"))
+    (should-not (opencode-session--provider-model-info "openai" "nope" conn))))
 
-(ert-deftest test-opencode-model/provider-model-items-nil ()
-  "Return nil for nil models."
-  (should (null (opencode-session--provider-model-items '((id . "x"))))))
+(ert-deftest test-opencode-model/candidates-list-models-and-connectable-providers ()
+  "Candidates list usable models plus providers that can be connected."
+  (let* ((opencode-session--recent-models nil)
+         (conn (opencode-model-test--connection))
+         (displays (mapcar (lambda (candidate) (plist-get candidate :display))
+                           (opencode-session--provider-model-candidates conn))))
+    (should (equal displays '("openai/gpt" "anthropic/* (connect)")))))
 
-;;; provider-model-candidate-display
+(ert-deftest test-opencode-model/completion-data-for-one-provider ()
+  "Completion can be limited to one connected provider."
+  (let* ((opencode-session--recent-models nil)
+         (data (opencode-session--provider-model-completion-data
+                (opencode-model-test--connection) "openai")))
+    (should (equal (car data) '("openai/gpt")))))
 
-(ert-deftest test-opencode-model/candidate-display-connected ()
-  "Display connected indicator."
-  (should (equal (opencode-session--provider-model-candidate-display
-                  "anthropic" "claude-3" t)
-                 "anthropic/claude-3 (connected)")))
+(ert-deftest test-opencode-model/candidate-display ()
+  "Unconnected providers display as connect actions."
+  (should (equal (opencode-session--provider-model-candidate-display "openai" "gpt" t)
+                 "openai/gpt"))
+  (should (equal (opencode-session--provider-model-candidate-display "anthropic" "*" nil)
+                 "anthropic/* (connect)")))
 
-(ert-deftest test-opencode-model/candidate-display-not-connected ()
-  "Display without connected indicator."
-  (should (equal (opencode-session--provider-model-candidate-display
-                  "anthropic" "claude-3" nil)
-                 "anthropic/claude-3")))
+(ert-deftest test-opencode-model/variant-for-model ()
+  "Switching models keeps an available variant, else uses the default."
+  (with-temp-buffer
+    (setq-local opencode-session--connection (opencode-model-test--connection))
+    (setq-local opencode-session--variant "high")
+    (should (equal (opencode-session--variant-for-model "openai" "gpt") "high"))
+    (setq-local opencode-session--variant "xhigh")
+    (let ((opencode-session-default-variant "low"))
+      (should (equal (opencode-session--variant-for-model "openai" "gpt") "low")))
+    (let ((opencode-session-default-variant nil))
+      (should-not (opencode-session--variant-for-model "openai" "gpt")))))
+
+(ert-deftest test-opencode-model/switch-model-sends-reference ()
+  "Model switches post a reference with the variant and update the buffer."
+  (with-temp-buffer
+    (opencode-session-mode)
+    (setq-local opencode-session--connection (opencode-model-test--connection))
+    (setq-local opencode-session--session (opencode-session-create :id "s1"))
+    (let (sent)
+      (cl-letf (((symbol-function 'opencode-client-session-switch-model)
+                 (lambda (_conn session-id model &rest args)
+                   (setq sent (list session-id model))
+                   (funcall (plist-get args :success))))
+                ((symbol-function 'message) #'ignore))
+        (should-error (opencode-session--set-variant nil nil))
+        (should-not sent)
+        (setq-local opencode-session--provider-id "openai")
+        (setq-local opencode-session--model-id "gpt")
+        (opencode-session--set-variant "high" 1))
+      (should (equal sent '("s1" ((providerID . "openai") (id . "gpt") (variant . "high")))))
+      (should (equal opencode-session--variant "high"))
+      (should (= opencode-session--variant-index 1)))))
+
+(ert-deftest test-opencode-model/set-agent-switches-server-agent ()
+  "Selecting an agent switches the session's agent on the server."
+  (with-temp-buffer
+    (opencode-session-mode)
+    (setq-local opencode-session--connection
+                (opencode-connection-create :agents '("build" "plan")))
+    (setq-local opencode-session--session (opencode-session-create :id "s1"))
+    (let (sent)
+      (cl-letf (((symbol-function 'opencode-client-session-switch-agent)
+                 (lambda (_conn session-id agent &rest args)
+                   (setq sent (list session-id agent))
+                   (funcall (plist-get args :success))))
+                ((symbol-function 'message) #'ignore))
+        (opencode-session--set-agent "plan" 1))
+      (should (equal sent '("s1" "plan")))
+      (should (equal opencode-session--agent "plan"))
+      (should (= opencode-session--agent-index 1)))))
 
 ;;; completable-agent-names
 
@@ -218,20 +256,87 @@
   "Return nil for nil."
   (should (null (opencode-session--agent-name nil))))
 
-;;; provider-auth-methods
+;;; auth methods
 
-(ert-deftest test-opencode-model/provider-auth-methods ()
-  "Extract auth methods for a provider."
-  (let ((data `((anthropic . [((type . "api") (label . "API key"))]))))
-    (let ((result (opencode-session--provider-auth-methods "anthropic" data)))
-      (should (= (length result) 1))
-      (should (equal (alist-get 'type (car result)) "api")))))
+(ert-deftest test-opencode-model/usable-auth-methods-skip-env ()
+  "Only key and OAuth methods are offered."
+  (should (equal (opencode-session--usable-auth-methods
+                  '((methods . (((type . "env") (names . ("X")))
+                                ((type . "key"))
+                                ((type . "command") (id . "cli") (label . "CLI"))
+                                ((type . "oauth") (id . "browser") (label . "Browser"))))))
+                 '(((type . "key")) ((type . "oauth") (id . "browser") (label . "Browser"))))))
 
-(ert-deftest test-opencode-model/provider-auth-methods-fallback ()
-  "Fall back to API key when provider not found."
-  (let ((result (opencode-session--provider-auth-methods "unknown" nil)))
-    (should (= (length result) 1))
-    (should (equal (alist-get 'type (car result)) "api"))))
+(ert-deftest test-opencode-model/auth-method-labels ()
+  "Methods are labelled by their label or type."
+  (should (equal (opencode-session--auth-method-label '((type . "key"))) "API key"))
+  (should (equal (opencode-session--auth-method-label '((type . "oauth") (label . "Sign in")))
+                 "Sign in")))
+
+(ert-deftest test-opencode-model/api-key-flow-connects-and-refreshes ()
+  "The API key flow stores the key and refreshes models before the callback."
+  (let ((conn (opencode-model-test--connection))
+        sent called)
+    (cl-letf (((symbol-function 'read-passwd) (lambda (&rest _) "sk-1"))
+              ((symbol-function 'opencode-client-integration-connect-key)
+               (lambda (_conn id key &rest args)
+                 (setq sent (list id key (plist-get args :answer)))
+                 (funcall (plist-get args :success))))
+              ((symbol-function 'opencode-session--refresh-providers)
+               (lambda (_conn callback) (funcall callback nil)))
+              ((symbol-function 'message) #'ignore))
+      (with-temp-buffer
+        (setq-local opencode-session--connection conn)
+        (opencode-session--connect-provider "anthropic" (lambda () (setq called t)))))
+    (should (equal sent '("anthropic" "sk-1" nil)))
+    (should called)))
+
+(ert-deftest test-opencode-model/oauth-flow-polls-until-complete ()
+  "Browser OAuth polls the attempt until it completes."
+  (let ((conn (opencode-model-test--connection))
+        (statuses (list "pending" "complete"))
+        browsed called)
+    (cl-letf (((symbol-function 'opencode-client-integration-oauth-connect)
+               (lambda (_conn _id method-id &rest args)
+                 (should (equal method-id "browser"))
+                 (funcall (plist-get args :success)
+                          :data '((attemptID . "con_1") (url . "https://x") (mode . "auto")))))
+              ((symbol-function 'opencode-client-integration-oauth-status)
+               (lambda (_conn _id _attempt &rest args)
+                 (funcall (plist-get args :success)
+                          :data `((status . ,(pop statuses))))))
+              ((symbol-function 'browse-url) (lambda (url &rest _) (setq browsed url)))
+              ((symbol-function 'run-at-time)
+               (lambda (_secs _repeat fn &rest args) (apply fn args)))
+              ((symbol-function 'opencode-session--refresh-providers)
+               (lambda (_conn callback) (funcall callback nil)))
+              ((symbol-function 'message) #'ignore))
+      (opencode-session--run-auth-flow
+       conn "openai" '((type . "oauth") (id . "browser") (label . "Browser"))
+       (lambda () (setq called t))))
+    (should (equal browsed "https://x"))
+    (should called)
+    (should-not statuses)))
+
+(ert-deftest test-opencode-model/oauth-code-flow-completes-with-code ()
+  "Code-mode OAuth sends the code the user pastes."
+  (let ((conn (opencode-model-test--connection))
+        completed)
+    (cl-letf (((symbol-function 'opencode-client-integration-oauth-connect)
+               (lambda (_conn _id _method &rest args)
+                 (funcall (plist-get args :success)
+                          :data '((attemptID . "con_1") (url . "") (mode . "code")))))
+              ((symbol-function 'read-string) (lambda (&rest _) "abc"))
+              ((symbol-function 'opencode-client-integration-oauth-complete)
+               (lambda (_conn _id attempt &rest args)
+                 (setq completed (list attempt (plist-get args :code)))
+                 (funcall (plist-get args :success))))
+              ((symbol-function 'opencode-session--refresh-providers)
+               (lambda (_conn callback) (funcall callback nil)))
+              ((symbol-function 'message) #'ignore))
+      (opencode-session--run-auth-flow
+       conn "openai" '((type . "oauth") (id . "headless")) #'ignore))
+    (should (equal completed '("con_1" "abc")))))
 
 (provide 'emacs-opencode-session-model-test)
 

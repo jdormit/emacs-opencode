@@ -14,7 +14,8 @@ https://github.com/user-attachments/assets/5882e485-cec4-40f0-ab4f-d668533f2b33
 
 Requirements:
 - Emacs 29+
-- The =opencode= CLI on your =$PATH= ([[https://opencode.ai/docs/#install][install docs]])
+- OpenCode 2 (the =opencode= CLI) on your =$PATH= ([[https://opencode.ai/v2/docs/][install docs]]). OpenCode
+  1 servers use an older API that this client no longer speaks.
 - The Emacs package =request=
 - =bun= or =node= recommended for performant SSE streaming; =curl= is used as a fallback
 
@@ -55,6 +56,12 @@ They support:
 
 - Streaming responses and tool output.
 - Agent, model/provider, and variant selection from the header-line controls.
+  The server stores these per session, so a selection also applies to other
+  clients viewing the session.
+- Provider sign-in: providers that are not connected yet appear in the model
+  list as =provider/* (connect)=. Choosing one, or running
+  =M-x opencode-session-connect-provider=, signs in with an API key or through
+  the provider's browser sign-in, then offers that provider's models.
 - Slash commands: type =/command args= or run =C-c C-o=.
 - Shell prompts: type =!command= to send shell output through OpenCode's shell
   prompt endpoint.
@@ -77,7 +84,10 @@ They support:
   starts before the user message that prompted that response. When point is in
   the input area, the whole session is forked.
 - Inline handling for OpenCode permission requests and questions via the
-  minibuffer.
+  minibuffer. Questions include the agent's question tool and requests from
+  MCP servers.
+- Automatic reconnection: if the event stream drops, the client reconnects and
+  reloads open sessions, since events sent while it was disconnected are lost.
 
 Context commands include the active region when one is selected; otherwise they
 include the 10 lines around point plus file and line metadata when available.
@@ -137,7 +147,8 @@ on top of OpenCode.
               &key model agent command dangerously-skip-permissions)
 #+end_src
 
-=PROMPT= is the message string to send. =CALLBACK= is invoked when the process
+=PROMPT= is the message string to send. =:model= accepts =provider/model= or
+=provider/model#variant=. =CALLBACK= is invoked when the process
 finishes. Its arity is inspected automatically: a callback that accepts two or
 more arguments receives =(OUTPUT SUCCESS-P)=, while a single-argument callback
 receives just =OUTPUT=. =OUTPUT= is the model's plain-text answer (the
@@ -151,8 +162,15 @@ The keyword arguments map to the corresponding =opencode run= CLI flags:
 |----------------------------------+-----------------------------------|
 | =:model=                         | =--model=                         |
 | =:agent=                         | =--agent=                         |
-| =:command=                       | =--command=                       |
-| =:dangerously-skip-permissions=  | =--dangerously-skip-permissions=  |
+| =:dangerously-skip-permissions=  | =--auto=                          |
+
+Each run starts a private server (=--standalone=) that exits with the command,
+rather than OpenCode's shared background service.
+
+=:command= runs a slash command, with =PROMPT= as its arguments. The OpenCode
+2 CLI cannot run commands, so this starts or reuses the session server for
+=default-directory=, runs the command in a new session there, and passes the
+command's final reply to =CALLBACK=.
 
 The command runs in =default-directory=; bind it to control where OpenCode
 runs.
@@ -180,6 +198,7 @@ Options and faces are in the =emacs-opencode= customize group. Common options:
 | =opencode-session-list-limit=            | =1000=            | Max sessions requested for completion    |
 | =opencode-session-default-agent=         | ="plan"=          | Default agent for new sessions           |
 | =opencode-session-default-variant=       | =nil=             | Default model variant                    |
+| =opencode-session-oauth-poll-interval=   | =2=               | Seconds between browser sign-in checks   |
 | =opencode-session-input-prompt=          | ="❯ "=            | Prompt string in session buffers         |
 | =opencode-session-show-reasoning=        | =nil=             | Show reasoning/thinking blocks by default |
 | =opencode-session-completion-providers=  | =(list ...)=      | Completion-at-point providers for input  |

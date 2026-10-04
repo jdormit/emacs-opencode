@@ -24,6 +24,12 @@
   "Return nil for empty input."
   (should (null (opencode-sse--extract-event-type ""))))
 
+(ert-deftest test-opencode-sse/extract-event-type-after-envelope-fields ()
+  "Extract the type that follows the event ID and timestamp."
+  (should (equal (opencode-sse--extract-event-type
+                  "{\"id\":\"evt_1\",\"created\":1,\"type\":\"session.text.delta\",\"data\":{\"type\":\"x\"}}")
+                 "session.text.delta")))
+
 ;;; strip-data-prefix
 
 (ert-deftest test-opencode-sse/strip-data-prefix ()
@@ -38,18 +44,18 @@
 ;;; build-url
 
 (ert-deftest test-opencode-sse/build-url ()
-  "Build the /event URL from a connection."
+  "Build the /api/event URL from a connection."
   (let ((conn (opencode-connection-create
                :base-url "http://localhost:4096")))
     (should (equal (opencode-sse--build-url conn)
-                   "http://localhost:4096/event"))))
+                   "http://localhost:4096/api/event"))))
 
 (ert-deftest test-opencode-sse/build-url-trailing-slash ()
-  "Strip trailing slash from base URL before appending /event."
+  "Strip trailing slash from base URL before appending /api/event."
   (let ((conn (opencode-connection-create
                :base-url "http://localhost:4096/")))
     (should (equal (opencode-sse--build-url conn)
-                   "http://localhost:4096/event"))))
+                   "http://localhost:4096/api/event"))))
 
 ;;; auth-header
 
@@ -401,6 +407,104 @@
     (opencode-sse--process-chunk conn "data: {\"type\":\"fp.test\",\"x\":1}")
     (should-not (opencode-sse--read-state conn :trailing-nl))))
 
+;;; v2 framing
+
+(ert-deftest test-opencode-sse/heartbeat-comment-ignored ()
+  "Heartbeat comment frames are skipped without error."
+  (let ((opencode-sse--handlers nil)
+        (conn (opencode-connection-create))
+        (calls 0))
+    (opencode-sse-register-handler "hb.test" (lambda (&rest _) (cl-incf calls)))
+    (opencode-sse--process-chunk conn ": heartbeat\n\n")
+    (opencode-sse--process-chunk conn "data: {\"id\":\"e\",\"type\":\"hb.test\",\"data\":{}}\n\n")
+    (should (= calls 1))))
+
+(ert-deftest test-opencode-sse/type-after-metadata-object ()
+  "Events whose metadata object precedes the type are still dispatched."
+  (let ((opencode-sse--handlers nil)
+        (conn (opencode-connection-create))
+        received)
+    (opencode-sse-register-handler "meta.first" (lambda (_e data _m) (setq received data)))
+    (opencode-sse--process-chunk
+     conn "data: {\"id\":\"e\",\"metadata\":{\"a\":1},\"type\":\"meta.first\",\"data\":{\"x\":2}}\n\n")
+    (should (equal (alist-get 'x (alist-get 'data received)) 2))))
+
+;;; reconnection
+
+(ert-deftest test-opencode-sse/event-meta-flags-reconnect ()
+  "Only a second server.connected on a connection is a reconnect."
+  (let ((conn (opencode-connection-create)))
+    (should-not (plist-get (opencode-sse--event-meta conn "server.connected") :reconnect))
+    (should (opencode-connection-sse-connected conn))
+    (should (plist-get (opencode-sse--event-meta conn "server.connected") :reconnect))
+    (should-not (plist-get (opencode-sse--event-meta conn "session.status") :reconnect))
+    (should (eq (plist-get (opencode-sse--event-meta conn "x") :connection) conn))))
+
+(ert-deftest test-opencode-sse/backoff-resets-after-stable-stream ()
+  "Backoff restarts only after a stream stayed connected for a while."
+  (let* ((proc (start-process "oc-sse-test" nil "true"))
+         (conn (opencode-connection-create :sse-process proc :sse-retry-count 4)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'opencode-connection-alive-p) (lambda (_) t))
+                  ((symbol-function 'run-at-time) (lambda (&rest _) 'timer)))
+          (opencode-sse--event-meta conn "server.connected")
+          (opencode-sse--handle-exit conn proc)
+          (should (= (opencode-connection-sse-retry-count conn) 5))
+          (process-put proc 'opencode-connected-at (- (float-time) 3600))
+          (opencode-sse--handle-exit conn proc)
+          (should (= (opencode-connection-sse-retry-count conn) 1)))
+      (delete-process proc))))
+
+(ert-deftest test-opencode-sse/failing-handler-does-not-block-others ()
+  "An error in one handler still lets later handlers and events run."
+  (let ((opencode-sse--handlers nil)
+        (seen nil))
+    (opencode-sse-register-handler "x" (lambda (&rest _) (push 'ok seen)))
+    (opencode-sse-register-handler "x" (lambda (&rest _) (error "Boom")))
+    (cl-letf (((symbol-function 'message) #'ignore))
+      (opencode-sse--dispatch "x" nil))
+    (should (equal seen '(ok)))))
+
+(ert-deftest test-opencode-sse/reconnect-delay-backs-off ()
+  "Reconnect delays double up to the maximum."
+  (should (= (opencode-sse--reconnect-delay 1) 1))
+  (should (= (opencode-sse--reconnect-delay 3) 4))
+  (should (= (opencode-sse--reconnect-delay 20) opencode-sse-reconnect-max-delay)))
+
+(ert-deftest test-opencode-sse/handle-exit-schedules-reconnect ()
+  "An unexpected stream exit schedules a reconnect while the server lives."
+  (let* ((proc (start-process "oc-sse-test" nil "true"))
+         (conn (opencode-connection-create :sse-process proc))
+         scheduled)
+    (unwind-protect
+        (cl-letf (((symbol-function 'opencode-connection-alive-p) (lambda (_) t))
+                  ((symbol-function 'run-at-time)
+                   (lambda (delay _repeat fn &rest args)
+                     (setq scheduled (list delay fn args))
+                     'timer)))
+          (opencode-sse--handle-exit conn proc))
+      (delete-process proc))
+    (should (equal scheduled (list 1 #'opencode-sse--reconnect (list conn proc))))
+    (should (= (opencode-connection-sse-retry-count conn) 1))))
+
+(ert-deftest test-opencode-sse/handle-exit-ignores-deliberate-close ()
+  "Closing a stream on purpose does not reconnect."
+  (let ((conn (opencode-connection-create :sse-process nil))
+        scheduled)
+    (cl-letf (((symbol-function 'opencode-connection-alive-p) (lambda (_) t))
+              ((symbol-function 'run-at-time) (lambda (&rest _) (setq scheduled t))))
+      (opencode-sse--handle-exit conn 'proc))
+    (should-not scheduled)))
+
+(ert-deftest test-opencode-sse/handle-exit-ignores-dead-server ()
+  "No reconnect once the server process is gone."
+  (let ((conn (opencode-connection-create :sse-process 'proc))
+        scheduled)
+    (cl-letf (((symbol-function 'opencode-connection-alive-p) (lambda (_) nil))
+              ((symbol-function 'run-at-time) (lambda (&rest _) (setq scheduled t))))
+      (opencode-sse--handle-exit conn 'proc))
+    (should-not scheduled)))
+
 ;;; handler registration
 
 (ert-deftest test-opencode-sse/register-and-dispatch ()
@@ -749,7 +853,7 @@
         ;; URL arg.
         (should (member "--url" cmd))
         (should (equal (nth (1+ (cl-position "--url" cmd :test #'equal)) cmd)
-                       "http://localhost:4096/event"))
+                       "http://localhost:4096/api/event"))
         ;; Events arg.
         (should (member "--events" cmd))
         ;; Auth arg.

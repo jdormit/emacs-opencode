@@ -15,6 +15,7 @@
 
 (declare-function opencode-run-server "emacs-opencode" (directory &optional on-ready))
 (declare-function opencode-session--maybe-register-subagent "emacs-opencode-session-handlers")
+(declare-function opencode-session--set-info "emacs-opencode-session-handlers")
 
 (defcustom opencode-session-input-prompt "❯ "
   "Prompt string shown before the session input area."
@@ -118,8 +119,13 @@ request completes."
         (setq-local default-directory
                     (opencode-connection-directory opencode-session--connection)))
       (opencode-session--register-buffer session buffer)
+      (when-let* ((info (opencode-session-info session)))
+        (opencode-session--update-session info))
       (when connection
-        (opencode-session--ensure-agents connection))
+        (opencode-session--ensure-agents connection)
+        (opencode-session--refresh-status connection)
+        (unless (opencode-session-info session)
+          (opencode-session--fetch-info connection buffer)))
       (opencode-session--render-buffer))
     (if (and connection (opencode-session-id session))
         (opencode-session--load-history connection session buffer on-history-loaded)
@@ -127,6 +133,19 @@ request completes."
         (funcall on-history-loaded buffer)))
     (pop-to-buffer buffer)
     buffer))
+
+(defun opencode-session--fetch-info (connection buffer)
+  "Load the session info for BUFFER's session through CONNECTION.
+Sessions opened by ID alone, such as subagent sessions, need their title,
+agent, and model."
+  (opencode-client-session-get
+   connection
+   (opencode-session-id (buffer-local-value 'opencode-session--session buffer))
+   :success (lambda (&rest args)
+              (when (buffer-live-p buffer)
+                (with-current-buffer buffer
+                  (opencode-session--update-session (plist-get args :data)))))
+   :error #'ignore))
 
 ;;; Connection management
 
@@ -220,11 +239,10 @@ input is preserved across the re-render."
               connection
               session-id
               title
-              :success (lambda (&rest args)
+              :success (lambda (&rest _args)
                          (when (buffer-live-p buffer)
                            (with-current-buffer buffer
-                             (opencode-session--update-session
-                              (plist-get args :data))))
+                             (opencode-session--set-title title)))
                          (message "OpenCode session renamed"))
               :error (lambda (&rest args)
                        (let ((detail (opencode-client-format-error args)))
@@ -244,16 +262,12 @@ input is preserved across the re-render."
      (lambda (connection)
        (when (buffer-live-p buffer)
          (with-current-buffer buffer
-           (let ((session-id (opencode-session-id opencode-session--session))
-                 (model (opencode-session--active-model)))
+           (let ((session-id (opencode-session-id opencode-session--session)))
              (unless session-id
                (error "OpenCode session ID is missing"))
-             (unless model
-               (error "OpenCode session has no selected model"))
              (opencode-client-session-compact
               connection
               session-id
-              model
               :success (lambda (&rest _args)
                          (message "OpenCode: compaction queued"))
               :error (lambda (&rest args)
@@ -339,10 +353,7 @@ message, fork the whole session."
      (lambda (connection)
        (when (buffer-live-p buffer)
          (with-current-buffer buffer
-           (let ((session-id (opencode-session-id opencode-session--session))
-                 (agent opencode-session--agent)
-                 (model (opencode-session--selected-model-string))
-                 (variant opencode-session--variant))
+           (let ((session-id (opencode-session-id opencode-session--session)))
              (opencode-client-commands
               connection
               :success (lambda (&rest args)
@@ -361,9 +372,6 @@ message, fork the whole session."
                               session-id
                               command
                               arguments
-                              :agent agent
-                              :variant variant
-                              :model model
                               :success (lambda (&rest _args)
                                          (message "OpenCode command queued"))
                               :error (lambda (&rest _args)
@@ -402,7 +410,7 @@ message, fork the whole session."
            (let ((session-id (opencode-session-id opencode-session--session)))
              (unless session-id
                (error "OpenCode session ID is missing"))
-             (opencode-client-session-abort
+             (opencode-client-session-interrupt
               connection
               session-id
               :success (lambda (&rest _args)
@@ -484,16 +492,6 @@ message, fork the whole session."
 
 ;;; Sending messages
 
-(defun opencode-session--selected-model ()
-  "Return the selected model as a cons (PROVIDER-ID . MODEL-ID) or nil."
-  (when (and opencode-session--provider-id opencode-session--model-id)
-    (cons opencode-session--provider-id opencode-session--model-id)))
-
-(defun opencode-session--selected-model-string ()
-  "Return the selected model as a \"provider/model\" string or nil."
-  (when (and opencode-session--provider-id opencode-session--model-id)
-    (format "%s/%s" opencode-session--provider-id opencode-session--model-id)))
-
 (defun opencode-session--extract-agent-mentions (input)
   "Extract @-agent mentions from INPUT.
 Returns a list of agent name strings found in INPUT that match
@@ -510,40 +508,21 @@ whitespace or appear at the start of the string."
         (setq start (match-end 0))))
     (delete-dups (nreverse mentions))))
 
-(defun opencode-session--build-message-parts (input)
-  "Build the message parts list for INPUT.
-Returns a list of part alists including a text part and any @-agent
-parts extracted from the input."
-  (let ((text-part `(("type" . "text") ("text" . ,input)))
-        (agent-names (opencode-session--extract-agent-mentions input))
-        (parts nil))
-    (push text-part parts)
-    (dolist (name agent-names)
-      (push `(("type" . "agent") ("name" . ,name)) parts))
-    (nreverse parts)))
-
 (defun opencode-session--send-input (connection session input)
   "Send INPUT to SESSION using CONNECTION.
 
-Parses @-agent mentions from INPUT and includes them as agent parts
-alongside the text part.  Restores INPUT when the request fails."
-  (let ((session-id (opencode-session-id session))
-        (parts (opencode-session--build-message-parts input))
-        (agent opencode-session--agent)
-        (model (opencode-session--selected-model))
-        (variant opencode-session--variant))
-    (opencode-client-session-prompt-async
-     connection
-     session-id
-     parts
-     :agent agent
-     :variant variant
-     :model model
-     :success (lambda (&rest _args)
-                (message "OpenCode: message queued"))
-     :error (lambda (&rest _args)
-              (opencode-session--restore-input input)
-                (message "OpenCode: failed to send message")))))
+Mentioned @-agents are sent alongside the text so the server can delegate
+to them.  Restores INPUT when the request fails."
+  (opencode-client-session-prompt
+   connection
+   (opencode-session-id session)
+   input
+   :agents (opencode-session--extract-agent-mentions input)
+   :success (lambda (&rest _args)
+              (message "OpenCode: message queued"))
+   :error (lambda (&rest _args)
+            (opencode-session--restore-input input)
+            (message "OpenCode: failed to send message"))))
 
 (defun opencode-session--classify-input (input)
   "Classify INPUT and return (TYPE . PAYLOAD).
@@ -560,15 +539,11 @@ original INPUT; for `shell' the leading \"!\" is stripped."
   "Send shell COMMAND to SESSION using CONNECTION.
 
 Restores the original input (with leading !) when the request fails."
-  (let ((session-id (opencode-session-id session))
-        (agent opencode-session--agent)
-        (model (opencode-session--selected-model)))
+  (let ((session-id (opencode-session-id session)))
     (opencode-client-session-shell
      connection
      session-id
      command
-     :agent agent
-     :model model
      :success (lambda (&rest _args)
                 (message "OpenCode: shell command queued"))
      :error (lambda (&rest _args)
@@ -599,9 +574,6 @@ Falls back to a normal prompt when INPUT does not match an available command."
                              (opencode-session-id session)
                              command
                              arguments
-                             :agent opencode-session--agent
-                             :variant opencode-session--variant
-                             :model (opencode-session--selected-model-string)
                              :success (lambda (&rest _args)
                                         (message "OpenCode command queued"))
                              :error (lambda (&rest _args)
@@ -626,22 +598,23 @@ Falls back to a normal prompt when INPUT does not match an available command."
                     "session")
               title))))
 
+(defun opencode-session--apply-session-info (session info)
+  "Copy server session INFO into the SESSION struct."
+  (let ((time (alist-get 'time info)))
+    (setf (opencode-session-project-id session) (alist-get 'projectID info))
+    (setf (opencode-session-directory session)
+          (alist-get 'directory (alist-get 'location info)))
+    (setf (opencode-session-title session) (alist-get 'title info))
+    (setf (opencode-session-time-created session) (alist-get 'created time))
+    (setf (opencode-session-time-updated session) (alist-get 'updated time))
+    (setf (opencode-session-info session) info)
+    session))
+
 (defun opencode-session--session-from-info (info)
-  "Create a session object from INFO."
-  (let* ((time (alist-get 'time info))
-         (created (alist-get 'created time))
-         (updated (alist-get 'updated time)))
-    (opencode-session-create
-     :id (alist-get 'id info)
-     :slug (alist-get 'slug info)
-     :version (alist-get 'version info)
-     :project-id (alist-get 'projectID info)
-     :directory (alist-get 'directory info)
-     :title (alist-get 'title info)
-     :time-created created
-     :time-updated updated
-     :summary (alist-get 'summary info)
-     :info info)))
+  "Create a session object from server session INFO."
+  (opencode-session--apply-session-info
+   (opencode-session-create :id (alist-get 'id info))
+   info))
 
 (defun opencode-session--message-at-point ()
   "Return the rendered message at point, if any."
@@ -672,13 +645,14 @@ Falls back to a normal prompt when INPUT does not match an available command."
           (setq previous candidate)))))))
 
 (defun opencode-session--fork-message-id-at-point ()
-  "Return the message ID to fork before at point, or nil for full-session fork."
+  "Return the message ID to fork before at point, or nil for full-session fork.
+A user prompt or shell command forks before itself; anything else forks
+before the user prompt that led to it."
   (when-let* ((message (opencode-session--message-at-point)))
-    (pcase (opencode-message-role message)
-      ("user" (opencode-message-id message))
-      ("assistant" (or (opencode-message-parent-id message)
-                       (when-let* ((user (opencode-session--previous-user-message message)))
-                         (opencode-message-id user)))))))
+    (if (member (opencode-message-role message) '("user" "shell"))
+        (opencode-message-id message)
+      (when-let* ((user (opencode-session--previous-user-message message)))
+        (opencode-message-id user)))))
 
 (defun opencode-session--register-buffer (session buffer)
   "Register BUFFER for SESSION."
@@ -735,100 +709,211 @@ PREVIOUS-NAME is the previous buffer name to compare against."
   "Return the message with MESSAGE-ID, if any."
   (cl-find message-id opencode-session--messages
            :key #'opencode-message-id
-           :test #'string=))
+           :test #'equal))
 
-(defun opencode-session--upsert-message (info)
-  "Update message list using INFO."
-  (let* ((message-id (alist-get 'id info))
-         (message (opencode-session--find-message message-id)))
-    (if message
-        (opencode-session--update-message message info)
-      (setq message (opencode-session--message-from-info info))
-      (setq opencode-session--messages
-            (append opencode-session--messages (list message))))
-    (when message
-      (opencode-session--adopt-model-from-message message)
-      (opencode-session--render-header))))
+(defun opencode-session--content-text (content)
+  "Join the text items of tool CONTENT, or return nil when there are none."
+  (let ((texts (delq nil (mapcar (lambda (item)
+                                   (and (equal (alist-get 'type item) "text")
+                                        (alist-get 'text item)))
+                                 (opencode-session--normalize-items content)))))
+    (when texts
+      (apply #'concat texts))))
 
-(defun opencode-session--adopt-model-from-message (message)
-  "Adopt provider/model from MESSAGE for header display."
-  (when (and (opencode-message-p message)
-             (stringp (opencode-message-provider-id message))
-             (stringp (opencode-message-model-id message))
-             (not (string-empty-p (opencode-message-provider-id message)))
-             (not (string-empty-p (opencode-message-model-id message))))
-    (setq-local opencode-session--provider-id (opencode-message-provider-id message))
-    (setq-local opencode-session--model-id (opencode-message-model-id message))
-    (opencode-session--sync-variant-selection)))
+(defun opencode-session--error-message (error-info)
+  "Return the message string of a structured ERROR-INFO."
+  (cond
+   ((stringp error-info) error-info)
+   ((listp error-info) (alist-get 'message error-info))))
 
-(defun opencode-session--update-message (message info)
-  "Update MESSAGE fields from INFO."
-  (let* ((time (alist-get 'time info))
-         (model (alist-get 'model info))
-         (created (alist-get 'created time))
-         (completed (alist-get 'completed time))
-         (provider-id (or (alist-get 'providerID info)
-                          (alist-get 'providerID model)))
-         (model-id (or (alist-get 'modelID info)
-                       (alist-get 'modelID model))))
-    (setf (opencode-message-session-id message) (alist-get 'sessionID info))
-    (setf (opencode-message-role message) (alist-get 'role info))
-    (setf (opencode-message-parent-id message) (alist-get 'parentID info))
-    (setf (opencode-message-model-id message) model-id)
-    (setf (opencode-message-provider-id message) provider-id)
-    (setf (opencode-message-mode message) (alist-get 'mode info))
-    (setf (opencode-message-agent message) (alist-get 'agent info))
-    (setf (opencode-message-path message) (alist-get 'path info))
-    (setf (opencode-message-time-created message) created)
-    (setf (opencode-message-time-completed message) completed)
-    (setf (opencode-message-finish message) (alist-get 'finish info))
-    (setf (opencode-message-error message) (alist-get 'error info))
-    (setf (opencode-message-summary message) (alist-get 'summary info))
-    (setf (opencode-message-info message) info)))
+(defun opencode-session--tool-state (state)
+  "Normalize server tool STATE into the alist the renderer reads.
 
-(defun opencode-session--message-from-info (info)
-  "Create a message object from INFO."
-  (when info
-    (let ((message (opencode-message-create :id (alist-get 'id info))))
+The renderer expects `status' to be pending, running, completed, or error,
+`output' to be text, and `error' to be a message string.  Streaming input
+is raw JSON text, so it is dropped until the call is parsed."
+  (let* ((status (alist-get 'status state))
+         (input (alist-get 'input state))
+         (metadata (alist-get 'metadata state))
+         (output (opencode-session--content-text (alist-get 'content state)))
+         (error-text (opencode-session--error-message (alist-get 'error state))))
+    (append `((status . ,(if (equal status "streaming") "pending" status)))
+            (when (and input (listp input)) `((input . ,input)))
+            (when metadata `((metadata . ,metadata)))
+            (when output `((output . ,output)))
+            (when error-text `((error . ,error-text))))))
+
+(defun opencode-session--content-part (session-id message-id index item)
+  "Return the part for assistant content ITEM at INDEX of MESSAGE-ID.
+SESSION-ID owns the message.  Text and reasoning parts are identified by
+their position; tool parts by their call ID."
+  (let ((id (format "%s:%d" message-id index)))
+    (pcase (alist-get 'type item)
+      ("text"
+       (opencode-message-part-create
+        :id id :session-id session-id :message-id message-id
+        :type "text" :text (alist-get 'text item)))
+      ("reasoning"
+       (opencode-message-part-create
+        :id id :session-id session-id :message-id message-id
+        :type "reasoning" :text (alist-get 'text item)))
+      ("tool"
+       (opencode-message-part-create
+        :id (alist-get 'id item) :session-id session-id :message-id message-id
+        :type "tool" :tool (alist-get 'name item)
+        :state (opencode-session--tool-state (alist-get 'state item)))))))
+
+(defun opencode-session--shell-state (info)
+  "Return renderer tool state for the shell message INFO.
+Commands that timed out or were killed render as errors."
+  (let ((status (alist-get 'status info))
+        (output (alist-get 'output (alist-get 'output info))))
+    (append `((status . ,(pcase status
+                           ("running" "running")
+                           ((or "timeout" "killed") "error")
+                           (_ "completed")))
+              (input . ((command . ,(alist-get 'command info)))))
+            (pcase status
+              ("timeout" '((error . "Command timed out")))
+              ("killed" '((error . "Command was killed"))))
+            (when (alist-get 'exit info)
+              `((metadata . ((exit . ,(alist-get 'exit info))))))
+            (when (stringp output) `((output . ,output))))))
+
+(defun opencode-session--instruction-paths (info)
+  "Return instruction file paths recorded on synthetic message INFO."
+  (opencode-session--normalize-items
+   (alist-get 'paths (alist-get 'instruction (alist-get 'metadata info)))))
+
+(defun opencode-session--message-parts (info session-id)
+  "Return the parts alist for message INFO in SESSION-ID."
+  (let* ((id (alist-get 'id info))
+         (part (lambda (suffix &rest props)
+                 (let ((part-id (format "%s:%s" id suffix)))
+                   (cons part-id
+                         (apply #'opencode-message-part-create
+                                :id part-id :session-id session-id :message-id id
+                                props))))))
+    (pcase (alist-get 'type info)
+      ("user"
+       (list (funcall part "text" :type "text" :text (alist-get 'text info))))
+      ("assistant"
+       (let ((index -1)
+             parts)
+         (dolist (item (opencode-session--normalize-items (alist-get 'content info)))
+           (cl-incf index)
+           (when-let* ((content (opencode-session--content-part session-id id index item)))
+             (push (cons (opencode-message-part-id content) content) parts)))
+         (nreverse parts)))
+      ("shell"
+       (list (funcall part "shell" :type "tool" :tool "shell"
+                      :state (opencode-session--shell-state info))))
+      ("compaction"
+       (list (funcall part "compaction" :type "compaction"
+                      :auto (equal (alist-get 'reason info) "auto")
+                      :metadata `((status . ,(alist-get 'status info))
+                                  (error . ,(opencode-session--error-message
+                                             (alist-get 'error info)))))))
+      ("synthetic"
+       (list (funcall part "loaded" :type "loaded"
+                      :metadata `((paths . ,(opencode-session--instruction-paths info)))))))))
+
+(defun opencode-session--displayed-message-p (info)
+  "Return non-nil when message INFO is shown in the transcript.
+Bookkeeping messages such as agent switches and idle markers are hidden,
+as are synthetic messages other than loaded instruction files."
+  (pcase (alist-get 'type info)
+    ((or "user" "assistant" "shell" "compaction") t)
+    ("synthetic" (and (opencode-session--instruction-paths info) t))))
+
+(defun opencode-session--message-role (type)
+  "Return the transcript role for message TYPE."
+  (if (equal type "synthetic") "system" type))
+
+(defun opencode-session--message-from-info (info &optional session-id)
+  "Create a message object from server message INFO in SESSION-ID.
+Returns nil for messages that are not displayed."
+  (when (and info (opencode-session--displayed-message-p info))
+    (let* ((session-id (or session-id
+                           (and opencode-session--session
+                                (opencode-session-id opencode-session--session))))
+           (message (opencode-message-create
+                     :id (alist-get 'id info)
+                     :session-id session-id
+                     :role (opencode-session--message-role (alist-get 'type info)))))
       (opencode-session--update-message message info)
+      (setf (opencode-message-parts message)
+            (opencode-session--message-parts info session-id))
+      (setf (opencode-message-text message)
+            (opencode-session--message-text message))
       message)))
 
-(defun opencode-session--update-message-part (part delta)
-  "Update message part from PART with optional DELTA."
-  (let* ((message-id (alist-get 'messageID part))
-         (session-id (alist-get 'sessionID part))
-         (message (opencode-session--find-message message-id)))
-    ;; Register subagent mapping when we see a task tool with a sessionId
-    (opencode-session--maybe-register-subagent part session-id)
-    (when message
-      (let* ((part-id (alist-get 'id part))
-             (existing (assoc part-id (opencode-message-parts message)))
-             (entry (or existing (cons part-id nil)))
-             (data (opencode-session--message-part-from-info part))
-             (previous (cdr entry)))
-        (setcdr entry data)
-        (when (and (opencode-message-part-p previous)
-                   (member (opencode-message-part-type data)
-                           '("text" "reasoning")))
-          (setf (opencode-message-part-text data)
-                (if delta
-                    (concat (opencode-message-part-text previous) delta)
-                  (or (opencode-message-part-text data)
-                      (opencode-message-part-text previous)))))
-        (when (opencode-message-part-p previous)
-          (opencode-session--carry-tool-output previous data))
-        (if existing
-            (setf (opencode-message-parts message)
-                  (cl-subst entry existing (opencode-message-parts message)))
-          (setf (opencode-message-parts message)
-                (append (opencode-message-parts message) (list entry))))
-        (setf (opencode-message-text message)
-              (opencode-session--message-text message))
-        (opencode-session--render-message message)))))
+(defun opencode-session--update-message (message info)
+  "Update the metadata of MESSAGE from server message INFO."
+  (let ((time (alist-get 'time info))
+        (model (alist-get 'model info)))
+    (setf (opencode-message-agent message) (alist-get 'agent info))
+    (setf (opencode-message-provider-id message) (alist-get 'providerID model))
+    (setf (opencode-message-model-id message) (alist-get 'id model))
+    (setf (opencode-message-time-created message) (alist-get 'created time))
+    (setf (opencode-message-time-completed message) (alist-get 'completed time))
+    (setf (opencode-message-finish message) (alist-get 'finish info))
+    (setf (opencode-message-error message) (alist-get 'error info))
+    (setf (opencode-message-info message) info)))
+
+(defun opencode-session--add-message (message)
+  "Append MESSAGE to the transcript and render it.
+Returns MESSAGE, or the existing message with the same ID."
+  (or (opencode-session--find-message (opencode-message-id message))
+      (progn
+        (setq opencode-session--messages
+              (append opencode-session--messages (list message)))
+        (opencode-session--adopt-model-from-message message)
+        (opencode-session--render-message message)
+        message)))
+
+(defun opencode-session--remove-messages (predicate)
+  "Remove messages matching PREDICATE and re-render when any were removed."
+  (let ((kept (cl-remove-if predicate opencode-session--messages)))
+    (unless (= (length kept) (length opencode-session--messages))
+      (opencode-session--rerender-preserving-input
+       (lambda () (setq opencode-session--messages kept))))))
+
+(defun opencode-session--move-message-to-end (message-id)
+  "Move the queued input MESSAGE-ID to the end of the transcript.
+A queued prompt is delivered after messages that arrived while it waited.
+Inputs that are no longer marked pending already sit in their final place."
+  (when-let* ((message (opencode-session--find-message message-id))
+              ((alist-get 'pending (opencode-message-info message))))
+    (opencode-session--set-info message 'pending nil)
+    (unless (eq message (car (last opencode-session--messages)))
+      (opencode-session--rerender-preserving-input
+       (lambda ()
+         (setq opencode-session--messages
+               (append (delq message (copy-sequence opencode-session--messages))
+                       (list message))))))))
+
+(defun opencode-session--rerender-preserving-input (mutate)
+  "Call MUTATE, then re-render the buffer without losing typed input."
+  (let ((input (opencode-session--current-input)))
+    (funcall mutate)
+    (opencode-session--render-buffer)
+    (unless (string-empty-p input)
+      (opencode-session--restore-input input))))
+
+(defun opencode-session--adopt-model-from-message (message)
+  "Adopt provider/model from MESSAGE when the buffer has no model yet."
+  (when (and (opencode-message-p message)
+             (null opencode-session--model-id)
+             (stringp (opencode-message-provider-id message))
+             (stringp (opencode-message-model-id message)))
+    (setq-local opencode-session--provider-id (opencode-message-provider-id message))
+    (setq-local opencode-session--model-id (opencode-message-model-id message))
+    (opencode-session--render-header)))
 
 (defun opencode-session--carry-tool-output (previous data)
   "Copy fetched tool output from PREVIOUS onto DATA when DATA lacks it.
-SSE part updates never carry output, so a later update to a completed
+Streamed tool events never carry output, so a later update to a completed
 tool part must not drop output fetched for an open drawer."
   (let ((old-state (opencode-message-part-state previous))
         (new-state (opencode-message-part-state data)))
@@ -838,86 +923,31 @@ tool part must not drop output fetched for an open drawer."
       (setf (opencode-message-part-state data)
             (cons (cons 'output (alist-get 'output old-state)) new-state)))))
 
-(defun opencode-session--message-part-from-info (info)
-  "Create a message part object from INFO."
-  (let* ((time (alist-get 'time info))
-         (start (alist-get 'start time))
-         (end (alist-get 'end time)))
-    (opencode-message-part-create
-     :id (alist-get 'id info)
-     :session-id (alist-get 'sessionID info)
-     :message-id (alist-get 'messageID info)
-     :type (alist-get 'type info)
-     :text (alist-get 'text info)
-     :metadata (alist-get 'metadata info)
-     :synthetic (alist-get 'synthetic info)
-     :ignored (alist-get 'ignored info)
-     :time-start start
-     :time-end end
-     :snapshot (alist-get 'snapshot info)
-     :reason (alist-get 'reason info)
-     :cost (alist-get 'cost info)
-     :tokens (alist-get 'tokens info)
-     :tool (alist-get 'tool info)
-     :state (alist-get 'state info)
-     :auto (alist-get 'auto info)
-     :overflow (alist-get 'overflow info)
-     :tail-start-id (alist-get 'tail_start_id info))))
-
-(defun opencode-session--upsert-compaction (session-id message-id reason &optional complete)
-  "Upsert a compaction marker for SESSION-ID and MESSAGE-ID.
-
-REASON is the server compaction reason.  When COMPLETE is non-nil, mark the
-compaction part as completed."
-  (let* ((message (or (opencode-session--find-message message-id)
-                      (let ((created (opencode-message-create
-                                      :id message-id
-                                      :session-id session-id
-                                      :role "user")))
-                        (setq opencode-session--messages
-                              (append opencode-session--messages (list created)))
-                        created)))
-         (part-id (format "%s-compaction" message-id))
-         (existing (assoc part-id (opencode-message-parts message)))
-         (part (or (cdr existing)
-                   (opencode-message-part-create
-                    :id part-id
-                    :session-id session-id
-                    :message-id message-id
-                    :type "compaction"))))
-    (setf (opencode-message-part-auto part) (string= reason "auto"))
-    (when complete
-      (setf (opencode-message-part-time-end part) complete))
-    (if existing
-        (setcdr existing part)
-      (setf (opencode-message-parts message)
-            (append (opencode-message-parts message) (list (cons part-id part)))))
-    (setf (opencode-message-text message)
-          (opencode-session--message-text message))
-    (opencode-session--render-message message)))
-
 ;;; Session state management
 
 (defun opencode-session--update-session (info)
-  "Update the buffer session from INFO."
-  (let* ((time (alist-get 'time info))
-         (created (alist-get 'created time))
-         (updated (alist-get 'updated time))
-         (previous-name (and opencode-session--session
-                             (opencode-session--buffer-name opencode-session--session))))
+  "Update the buffer session from server session INFO."
+  (let ((previous-name (and opencode-session--session
+                            (opencode-session--buffer-name opencode-session--session)))
+        (model (alist-get 'model info)))
     (unless opencode-session--session
       (setq opencode-session--session (opencode-session-create :id (alist-get 'id info))))
-    (setf (opencode-session-slug opencode-session--session) (alist-get 'slug info))
-    (setf (opencode-session-version opencode-session--session) (alist-get 'version info))
-    (setf (opencode-session-project-id opencode-session--session) (alist-get 'projectID info))
-    (setf (opencode-session-directory opencode-session--session) (alist-get 'directory info))
-    (setf (opencode-session-title opencode-session--session) (alist-get 'title info))
-    (setf (opencode-session-time-created opencode-session--session) created)
-    (setf (opencode-session-time-updated opencode-session--session) updated)
-    (setf (opencode-session-summary opencode-session--session) (alist-get 'summary info))
-    (setf (opencode-session-info opencode-session--session) info)
+    (opencode-session--apply-session-info opencode-session--session info)
+    (when-let* ((agent (alist-get 'agent info)))
+      (opencode-session--set-agent-from-server agent))
+    (when model
+      (opencode-session--set-model-from-server model))
     (opencode-session--rename-buffer previous-name)
     (opencode-session--render-header)))
+
+(defun opencode-session--set-title (title)
+  "Set the buffer session TITLE and rename the buffer to match."
+  (when opencode-session--session
+    (let ((previous-name (opencode-session--buffer-name opencode-session--session)))
+      (setf (opencode-session-title opencode-session--session) title)
+      (setf (alist-get 'title (opencode-session-info opencode-session--session)) title)
+      (opencode-session--rename-buffer previous-name)
+      (opencode-session--render-header))))
 
 (defun opencode-session--update-status (session-id status)
   "Update STATUS for SESSION-ID.
@@ -932,6 +962,24 @@ STATUS is an `opencode-status' struct."
           (opencode-session--render-retry-banner)
           (opencode-session--maybe-start-spinner)
           (opencode-session--maybe-stop-spinner))))))
+
+(defun opencode-session--refresh-status (connection)
+  "Sync the busy state of buffers using CONNECTION with the server."
+  (opencode-client-session-active
+   connection
+   :success (lambda (&rest args)
+              (let ((active (plist-get args :data)))
+                (maphash
+                 (lambda (session-id buffer)
+                   (when (and (buffer-live-p buffer)
+                              (eq (buffer-local-value 'opencode-session--connection buffer)
+                                  connection))
+                     (let ((busy (assq (intern session-id) active)))
+                       (opencode-session--update-status
+                        session-id
+                        (opencode-status-create :type (if busy "busy" "idle"))))))
+                 opencode-session--buffers)))
+   :error #'ignore))
 
 ;;; Command completion
 
@@ -1008,13 +1056,13 @@ Returns a cons cell (START . END) or nil when the input is not a slash command."
            (connection opencode-session--connection))
       (when connection
         (let ((commands (opencode-connection-commands connection)))
-          (cond
-           ((eq commands :loading) nil)
-           ((null commands)
+          (pcase (opencode-connection-commands-state connection)
+           ((pred consp) nil)
+           ('nil
             (opencode-session--fetch-commands connection)
             (message "OpenCode: loading commands")
             nil)
-           (t
+           (_
             (let* ((items (opencode-session--command-items commands))
                    (names (opencode-session--command-names items)))
               (when (and names (listp names))
@@ -1111,60 +1159,121 @@ COMMAND is nil when INPUT is not a slash command."
 
 ;;; History loading
 
+(defvar-local opencode-session--history-loads 0
+  "Number of history loads in flight for this buffer.
+While positive, session events for the buffer are queued instead of
+applied, because the loaded snapshot would discard their effects.")
+
+(defvar-local opencode-session--queued-events nil
+  "Events that arrived during a history load, newest first.
+Each element is (HANDLER EVENT DATA META).")
+
+(defvar opencode-session--replaying nil
+  "Non-nil while queued events are replayed onto a loaded history.")
+
+(defun opencode-session--queue-event (handler event data meta)
+  "Queue HANDLER's EVENT with DATA and META when a history load is in flight.
+Returns non-nil when queued."
+  (when (> opencode-session--history-loads 0)
+    (push (list handler event data meta) opencode-session--queued-events)
+    t))
+
+(defun opencode-session--replay-queued-events ()
+  "Apply the events that arrived while history was loading.
+Handlers skip changes the loaded snapshot already contains."
+  (let ((events (nreverse opencode-session--queued-events))
+        (opencode-session--replaying t))
+    (setq opencode-session--queued-events nil)
+    (dolist (entry events)
+      (condition-case-unless-debug err
+          (apply (car entry) (cdr entry))
+        (error
+         (message "OpenCode: error replaying %s: %s" (nth 1 entry)
+                  (error-message-string err)))))))
+
+(defun opencode-session--inbox-message (item session-id)
+  "Return a message for queued inbox ITEM in SESSION-ID, or nil if hidden.
+The message is marked pending until the session receives it."
+  (when (member (alist-get 'type item) '("user" "synthetic"))
+    (when-let* ((message (opencode-session--message-from-info
+                          (append (list (cons 'id (alist-get 'id item))
+                                        (cons 'type (alist-get 'type item))
+                                        (cons 'pending t)
+                                        (cons 'time (alist-get 'time item)))
+                                  (alist-get 'payload item))
+                          session-id)))
+      message)))
+
 (defun opencode-session--load-history (connection session buffer &optional on-history-loaded)
   "Load existing messages for SESSION using CONNECTION into BUFFER.
 
-Call ON-HISTORY-LOADED with BUFFER after the request completes."
-  (opencode-client-session-messages
-   connection
-   (opencode-session-id session)
-   :success (lambda (&rest args)
-              (let* ((data (plist-get args :data))
-                     (items (cond
-                             ((listp data) data)
-                             ((vectorp data) (append data nil))
-                             (t nil))))
-                (when (buffer-live-p buffer)
-                  (with-current-buffer buffer
-                    (setq opencode-session--messages nil)
-                    (dolist (item items)
-                      (opencode-session--hydrate-message item))
-                    (opencode-session--render-buffer))
-                  (when on-history-loaded
-                    (funcall on-history-loaded buffer)))))
-   :error (lambda (&rest _args)
-            (message "OpenCode: failed to load session history")
-            (when on-history-loaded
-              (funcall on-history-loaded buffer)))))
+Queued inputs the session has not received yet are shown after the
+messages.  Call ON-HISTORY-LOADED with BUFFER after the request completes."
+  (let ((session-id (opencode-session-id session))
+        inbox)
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (cl-incf opencode-session--history-loads)))
+    (cl-labels
+        ((finish (messages)
+           (when (buffer-live-p buffer)
+             (with-current-buffer buffer
+               (cl-decf opencode-session--history-loads)
+               (when messages
+                 (opencode-session--rerender-preserving-input
+                  (lambda ()
+                    (setq opencode-session--messages (car messages))))
+                 (opencode-session--refetch-open-drawers))
+               (when (zerop opencode-session--history-loads)
+                 (opencode-session--replay-queued-events))))
+           (when on-history-loaded
+             (funcall on-history-loaded buffer)))
+         (fetch-messages ()
+           (opencode-client-session-messages
+            connection session-id
+            :success
+            (lambda (&rest args)
+              (let* ((messages (delq nil (mapcar #'opencode-session--hydrate-message
+                                                 (plist-get args :data))))
+                     (pending (cl-remove-if
+                               (lambda (message)
+                                 (cl-find (opencode-message-id message) messages
+                                          :key #'opencode-message-id :test #'equal))
+                               (delq nil (mapcar (lambda (item)
+                                                   (opencode-session--inbox-message
+                                                    item session-id))
+                                                 inbox)))))
+                (finish (list (append messages pending)))))
+            :error (lambda (&rest _args)
+                     (message "OpenCode: failed to load session history")
+                     (finish nil)))))
+      ;; Read the inbox first: an input delivered between the two reads then
+      ;; appears in both, rather than in neither.
+      (opencode-client-session-inbox
+       connection session-id
+       :success (lambda (&rest args)
+                  (setq inbox (plist-get args :data))
+                  (fetch-messages))
+       :error (lambda (&rest _args) (fetch-messages))))))
 
-(defun opencode-session--hydrate-message (item)
-  "Add a message ITEM returned from the API."
-  (let* ((info (alist-get 'info item))
-         (parts (alist-get 'parts item))
-         (session-id (alist-get 'sessionID info))
-         (message (opencode-session--message-from-info info)))
-    (when message
-      (setf (opencode-message-parts message)
-            (opencode-session--hydrate-parts parts))
-      ;; Register subagent mappings for any task tool parts
-      (dolist (raw-part (opencode-session--normalize-items parts))
-        (opencode-session--maybe-register-subagent raw-part session-id))
-      (setf (opencode-message-text message)
-            (opencode-session--message-text message))
-      (setq opencode-session--messages
-            (append opencode-session--messages (list message))))))
+(defun opencode-session--refetch-open-drawers ()
+  "Fetch output for open tool drawers whose parts were reloaded without it."
+  (dolist (message opencode-session--messages)
+    (when (cl-some (lambda (entry)
+                     (and (opencode-session--tool-drawer-open-p (car entry))
+                          (opencode-session--tool-drawer-available-p (cdr entry))
+                          (null (opencode-session--tool-output (cdr entry)))))
+                   (opencode-message-parts message))
+      (opencode-session--fetch-tool-output message nil))))
 
-(defun opencode-session--hydrate-parts (parts)
-  "Hydrate PARTS into an alist of message parts."
-  (let (result)
-    (dolist (part (opencode-session--normalize-items parts))
-      (let* ((part-id (alist-get 'id part))
-             (data (opencode-session--message-part-from-info part))
-             (existing (assoc part-id result)))
-        (if existing
-            (setcdr existing data)
-          (push (cons part-id data) result))))
-    (nreverse result)))
+(defun opencode-session--hydrate-message (info)
+  "Return a message object for server message INFO, or nil if hidden.
+Registers subagent sessions started by its tool calls."
+  (when-let* ((message (opencode-session--message-from-info info)))
+    (dolist (entry (opencode-message-parts message))
+      (opencode-session--maybe-register-subagent
+       (cdr entry) (opencode-message-session-id message)))
+    message))
 
 (provide 'emacs-opencode-session-mode)
 

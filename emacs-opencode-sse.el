@@ -97,7 +97,32 @@ connection on which the event arrived, so handlers can route
 responses back to the correct OpenCode server."
   (let ((handlers (alist-get event opencode-sse--handlers nil nil #'string=)))
     (dolist (handler handlers)
-      (funcall handler event data meta))))
+      ;; One failing handler must not drop the rest of the stream's events.
+      (condition-case-unless-debug err
+          (funcall handler event data meta)
+        (error
+         (message "OpenCode: error handling %s: %s" event (error-message-string err)))))))
+
+(defconst opencode-sse-reconnect-max-delay 30
+  "Maximum seconds to wait between SSE reconnection attempts.")
+
+(defconst opencode-sse-stable-seconds 30
+  "Seconds a stream must stay connected before reconnect backoff resets.")
+
+(defun opencode-sse--event-meta (connection event)
+  "Return the handler META plist for EVENT arriving on CONNECTION.
+
+The server sends `server.connected' each time a stream opens.  META
+carries `:reconnect' non-nil when an earlier stream on CONNECTION already
+connected, which tells handlers that events may have been missed."
+  (let ((reconnect nil))
+    (when (and (equal event "server.connected")
+               (opencode-connection-p connection))
+      (setq reconnect (opencode-connection-sse-connected connection))
+      (setf (opencode-connection-sse-connected connection) t)
+      (when-let* ((process (opencode-connection-sse-process connection)))
+        (process-put process 'opencode-connected-at (float-time))))
+    (list :connection connection :reconnect reconnect)))
 
 (defun opencode-sse--decode-data (data)
   "Decode DATA from JSON.
@@ -118,7 +143,7 @@ Signals an error when DATA is not valid JSON."
 
 (defun opencode-sse--build-url (connection)
   "Build the SSE endpoint URL for CONNECTION."
-  (format "%s/event"
+  (format "%s/api/event"
           (string-remove-suffix "/" (opencode-connection-base-url connection))))
 
 (defun opencode-sse--auth-header (connection)
@@ -177,8 +202,11 @@ Returns the payload portion, or STR unchanged if no prefix is found."
 
 (defun opencode-sse--extract-event-type (data)
   "Extract the event type from raw SSE DATA without JSON parsing.
-Returns the type string, or nil if it cannot be extracted."
-  (when (string-match "\\`{\"type\":\"\\([^\"]+\\)\"" data)
+
+The server writes the top-level type before the nested event payload, so
+the first type field is the event's.  Returns the type string, or nil if
+it cannot be extracted."
+  (when (string-match "\\`{[^{]*?\"type\":\"\\([^\"]+\\)\"" data)
     (match-string 1 data)))
 
 (defun opencode-sse--finalize-event (connection fragments)
@@ -197,27 +225,38 @@ Resets CONNECTION SSE state afterward."
            (data (string-trim-right
                   (opencode-sse--strip-data-prefix raw)
                   "[\n\r]+"))
-           (event (opencode-sse--extract-event-type data))
+           (has-data (string-prefix-p "data: " raw))
+           (payload nil)
+           (event (or (opencode-sse--extract-event-type data)
+                      ;; A metadata object can precede the type field;
+                      ;; fall back to a full parse for those events.
+                      (and has-data
+                           (setq payload (opencode-sse--decode-data data))
+                           (alist-get 'type payload))))
            (data-bytes (string-bytes data)))
-      (unless event
+      (unless (or event (not has-data))
         (error "OpenCode SSE payload missing type field"))
-      ;; Only JSON-parse events that have registered handlers.
-      (if (null (alist-get event opencode-sse--handlers nil nil #'string=))
+      ;; Only JSON-parse events that have registered handlers.  Frames
+      ;; without data, like heartbeat comments, have no event.
+      (if (or (null event)
+              (null (alist-get event opencode-sse--handlers nil nil #'string=)))
           ;; No handler — record skip if profiling.
-          (when opencode-sse-profile-enabled
+          (when (and event opencode-sse-profile-enabled)
             (opencode-sse-profile--record-skip event data-bytes))
         ;; Has a handler — parse and dispatch.
         (if opencode-sse-profile-enabled
             (let* ((parse-start (opencode-sse-profile--now))
-                   (payload (opencode-sse--decode-data data))
+                   (payload (or payload (opencode-sse--decode-data data)))
                    (parse-ms (opencode-sse-profile--elapsed-ms parse-start))
                    (dispatch-start (opencode-sse-profile--now)))
-              (opencode-sse--dispatch event payload (list :connection connection))
+              (opencode-sse--dispatch event payload
+                                      (opencode-sse--event-meta connection event))
               (let ((dispatch-ms (opencode-sse-profile--elapsed-ms dispatch-start)))
                 (opencode-sse-profile--record-finalize
                  event parse-ms dispatch-ms data-bytes)))
-          (let ((payload (opencode-sse--decode-data data)))
-            (opencode-sse--dispatch event payload (list :connection connection))))))))
+          (let ((payload (or payload (opencode-sse--decode-data data))))
+            (opencode-sse--dispatch event payload
+                                    (opencode-sse--event-meta connection event))))))))
 
 (defun opencode-sse--process-chunk (connection chunk)
   "Process SSE CHUNK for CONNECTION.
@@ -330,6 +369,41 @@ large unhandled events (e.g. multi-megabyte session.diff)."
         (unless (string-empty-p rest)
           (opencode-sse--process-chunk connection rest))))))
 
+;;; Reconnection
+
+(defun opencode-sse--reconnect-delay (attempt)
+  "Return seconds to wait before reconnection ATTEMPT (1-based)."
+  (min opencode-sse-reconnect-max-delay (expt 2 (max 0 (1- attempt)))))
+
+(defun opencode-sse--handle-exit (connection process)
+  "Schedule a reconnect after PROCESS, CONNECTION's stream, exits.
+
+Does nothing when the stream was closed on purpose or the server is gone."
+  (when (and (eq (opencode-connection-sse-process connection) process)
+             (opencode-connection-alive-p connection))
+    (let* ((connected-at (process-get process 'opencode-connected-at))
+           (stable (and connected-at
+                        (> (- (float-time) connected-at) opencode-sse-stable-seconds)))
+           (attempt (1+ (if stable
+                            0
+                          (or (opencode-connection-sse-retry-count connection) 0))))
+           (delay (opencode-sse--reconnect-delay attempt)))
+      (setf (opencode-connection-sse-retry-count connection) attempt)
+      (when (timerp (opencode-connection-sse-retry-timer connection))
+        (cancel-timer (opencode-connection-sse-retry-timer connection)))
+      (setf (opencode-connection-sse-retry-timer connection)
+            (run-at-time delay nil #'opencode-sse--reconnect connection process)))))
+
+(defun opencode-sse--reconnect (connection process)
+  "Reopen CONNECTION's stream if PROCESS is still its exited stream."
+  (setf (opencode-connection-sse-retry-timer connection) nil)
+  (when (and (eq (opencode-connection-sse-process connection) process)
+             (opencode-connection-alive-p connection))
+    (let ((attempts (opencode-connection-sse-retry-count connection)))
+      (opencode-sse-close connection)
+      (setf (opencode-connection-sse-retry-count connection) attempts)
+      (opencode-sse-open connection))))
+
 ;;; Bridge backend
 ;; A JS process (bun or node) that connects to the SSE endpoint, parses
 ;; events, filters by type, strips large unused fields, and emits one
@@ -431,13 +505,15 @@ JSON lines to handlers."
                   (let* ((event (alist-get 'type parsed))
                          (dispatch-start (opencode-sse-profile--now)))
                     (when event
-                      (opencode-sse--dispatch event parsed (list :connection connection))
+                      (opencode-sse--dispatch event parsed
+                                              (opencode-sse--event-meta connection event))
                       (let ((dispatch-ms (opencode-sse-profile--elapsed-ms dispatch-start)))
                         (opencode-sse-profile--record-finalize
                          event parse-ms dispatch-ms (string-bytes line)))))))
             (when-let* ((parsed (opencode-sse--bridge-parse-line line)))
               (when-let* ((event (alist-get 'type parsed)))
-                (opencode-sse--dispatch event parsed (list :connection connection)))))
+                (opencode-sse--dispatch event parsed
+                                        (opencode-sse--event-meta connection event)))))
           (when chunk-start
             (opencode-sse-profile--record-chunk
              (opencode-sse-profile--elapsed-ms chunk-start)
@@ -503,7 +579,8 @@ Returns the bridge process."
                                  (opencode-sse--log-to-buffer
                                   log-buffer
                                   "\n[opencode] SSE bridge stopped"
-                                  nil))))))
+                                  nil)
+                                 (opencode-sse--handle-exit connection proc))))))
     (dolist (buf (list log-buffer stderr-buffer))
       (with-current-buffer buf
         (setq-local buffer-read-only t)
@@ -555,7 +632,8 @@ Returns the curl process."
                                      (let ((inhibit-read-only t)
                                            (inhibit-modification-hooks t))
                                        (goto-char (point-max))
-                                       (insert "\n[opencode] SSE stream closed")))))))))
+                                       (insert "\n[opencode] SSE stream closed"))))
+                                 (opencode-sse--handle-exit connection proc))))))
     (with-current-buffer buffer
       (setq-local buffer-read-only t)
       (setq-local buffer-undo-list t)
@@ -586,13 +664,18 @@ Returns the streaming process."
 
 (defun opencode-sse-close (connection)
   "Stop the SSE stream for CONNECTION."
+  (when (timerp (opencode-connection-sse-retry-timer connection))
+    (cancel-timer (opencode-connection-sse-retry-timer connection)))
+  (setf (opencode-connection-sse-retry-timer connection) nil)
+  (setf (opencode-connection-sse-retry-count connection) 0)
   (when-let* ((process (opencode-connection-sse-process connection)))
+    ;; Clear the slot first so the sentinel treats this exit as deliberate.
+    (setf (opencode-connection-sse-process connection) nil)
     (when (process-live-p process)
       (delete-process process))
     (when-let* ((buffer (process-buffer process)))
       (when (buffer-live-p buffer)
-        (kill-buffer buffer)))
-    (setf (opencode-connection-sse-process connection) nil))
+        (kill-buffer buffer))))
   ;; Clean up stderr pipe process (bridge mode).
   (when-let* ((stderr (opencode-connection-sse-stderr-process connection)))
     (when (process-live-p stderr)

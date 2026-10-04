@@ -3,8 +3,9 @@
 (require 'cl-lib)
 (require 'subr-x)
 
-(declare-function opencode-client-commands "emacs-opencode-client" (conn &key success error))
-(declare-function opencode-client-providers "emacs-opencode-client" (conn &key success error))
+(declare-function opencode-client-commands "emacs-opencode-client" (conn &rest args))
+(declare-function opencode-client-models "emacs-opencode-client" (conn &rest args))
+(declare-function opencode-client-integrations "emacs-opencode-client" (conn &rest args))
 
 (cl-defstruct (opencode-connection (:constructor opencode-connection-create))
   base-url
@@ -17,13 +18,19 @@
   agents
   agents-raw
   commands
-  providers
-  provider-catalog
+  commands-state
+  models
+  integrations
+  models-state
+  project-id
   process
   sse-process
   sse-state
   sse-mode
-  sse-stderr-process)
+  sse-stderr-process
+  sse-connected
+  sse-retry-timer
+  sse-retry-count)
 
 
 (defcustom opencode-server-host "127.0.0.1"
@@ -120,71 +127,137 @@ HOSTNAME and PORT override the default server config."
      :directory (file-name-as-directory (expand-file-name directory))
      :timeout 10)))
 
+(defun opencode-connection--environment-password (environment)
+  "Return the server password set in ENVIRONMENT, if any.
+
+ENVIRONMENT has the shape of `opencode-server-environment'."
+  (or (cdr (assoc "OPENCODE_PASSWORD" environment))
+      (cdr (assoc "OPENCODE_SERVER_PASSWORD" environment))))
+
+(defun opencode-connection--generate-password ()
+  "Return a random password for a new server."
+  (let ((bytes (with-temp-buffer
+                 (set-buffer-multibyte nil)
+                 (condition-case nil
+                     (insert-file-contents-literally "/dev/urandom" nil 0 32)
+                   (file-error
+                    (dotimes (_ 32) (insert (random 256)))))
+                 (buffer-string))))
+    (base64url-encode-string bytes t)))
+
+(defun opencode-connection--server-environment (password)
+  "Return the server environment with PASSWORD set as its password.
+An explicit value overrides any password inherited from Emacs."
+  (opencode-connection--process-environment
+   (append opencode-server-environment
+           `(("OPENCODE_PASSWORD" . ,password)))))
+
 (defun opencode-connection--maybe-ready (process output connection ready-callback)
   "Process OUTPUT and call READY-CALLBACK when server is ready."
   (when (and ready-callback
              (not (process-get process 'opencode-ready)))
-    (when (string-match-p "opencode server listening on" output)
-      (process-put process 'opencode-ready t)
-      (funcall ready-callback process)
-      (opencode-connection-ensure-providers connection)
-      (opencode-connection-ensure-commands connection))))
+    (let ((seen (concat (process-get process 'opencode-output) output)))
+      (process-put process 'opencode-output seen)
+      (when (string-match-p "server listening on" seen)
+        (process-put process 'opencode-ready t)
+        (process-put process 'opencode-output nil)
+        (funcall ready-callback process)
+        (opencode-connection-ensure-models connection)
+        (opencode-connection-ensure-commands connection)))))
 
 (defun opencode-connection-ensure-commands (connection &optional on-success on-error)
   "Ensure commands are fetched and cached for CONNECTION.
 
 ON-SUCCESS is called with ITEMS when available. ON-ERROR is called on failure."
   (require 'emacs-opencode-client)
-  (let ((commands (opencode-connection-commands connection)))
-    (cond
-     ((and commands (or (vectorp commands) (listp commands)))
-      (when on-success (funcall on-success commands))
-      commands)
-     ((eq commands :loading) nil)
-     (t
-      (setf (opencode-connection-commands connection) :loading)
-      (opencode-client-commands
-       connection
-       :success (lambda (&rest args)
-                  (let ((data (plist-get args :data)))
-                    (setf (opencode-connection-commands connection) data)
-                    (when on-success
-                      (funcall on-success data))))
-       :error (lambda (&rest _args)
-                (setf (opencode-connection-commands connection) nil)
-                (if on-error
-                    (funcall on-error)
-                  (message "OpenCode: failed to load commands"))))))))
+  (pcase (opencode-connection-commands-state connection)
+    (:loaded
+     (when on-success (funcall on-success (opencode-connection-commands connection)))
+     (opencode-connection-commands connection))
+    ((pred consp) nil)
+    (_
+     ;; A fresh token marks this load; results of a load that was
+     ;; invalidated while in flight are dropped.
+     (let ((token (list :loading)))
+       (setf (opencode-connection-commands-state connection) token)
+       (opencode-client-commands
+        connection
+        :success (lambda (&rest args)
+                   (when (eq (opencode-connection-commands-state connection) token)
+                     (let ((data (plist-get args :data)))
+                       (setf (opencode-connection-commands connection) data)
+                       (setf (opencode-connection-commands-state connection) :loaded)
+                       (when on-success
+                         (funcall on-success data)))))
+        :error (lambda (&rest _args)
+                 (when (eq (opencode-connection-commands-state connection) token)
+                   (setf (opencode-connection-commands-state connection) nil)
+                   (if on-error
+                       (funcall on-error)
+                     (message "OpenCode: failed to load commands")))))))))
 
-(defun opencode-connection-ensure-providers (connection &optional on-success on-error)
-  "Ensure providers are fetched and cached for CONNECTION.
+(defun opencode-connection-invalidate-commands (connection)
+  "Drop the cached command list for CONNECTION."
+  (setf (opencode-connection-commands connection) nil)
+  (setf (opencode-connection-commands-state connection) nil))
 
-ON-SUCCESS is called with ITEMS when available. ON-ERROR is called on failure."
+(defun opencode-connection-ensure-models (connection &optional on-success on-error)
+  "Ensure the model and integration catalogs are cached for CONNECTION.
+
+The model catalog lists models from connected providers; the integration
+catalog lists every provider that can be connected.  ON-SUCCESS is called
+with the model list once both are available.  ON-ERROR is called on
+failure."
   (require 'emacs-opencode-client)
-  (let ((providers (opencode-connection-providers connection)))
-    (cond
-     ((and providers (or (vectorp providers) (listp providers)))
-      (when on-success (funcall on-success providers))
-      providers)
-     ((eq providers :loading) nil)
-     (t
-      (setf (opencode-connection-providers connection) :loading)
-      (setf (opencode-connection-provider-catalog connection) :loading)
-      (opencode-client-providers
-       connection
-       :success (lambda (&rest args)
-                  (let* ((data (plist-get args :data))
-                         (items (alist-get 'all data)))
-                     (setf (opencode-connection-providers connection) items)
-                     (setf (opencode-connection-provider-catalog connection) data)
-                     (when on-success
-                       (funcall on-success items))))
-       :error (lambda (&rest _args)
-                 (setf (opencode-connection-providers connection) nil)
-                 (setf (opencode-connection-provider-catalog connection) nil)
-                 (if on-error
-                     (funcall on-error)
-                   (message "OpenCode: failed to load providers"))))))))
+  (pcase (opencode-connection-models-state connection)
+    (:loaded
+     (when on-success (funcall on-success (opencode-connection-models connection)))
+     (opencode-connection-models connection))
+    ((pred consp) nil)
+    (_
+     (let ((token (list :loading))
+           (pending 2)
+           (failed nil))
+       (setf (opencode-connection-models-state connection) token)
+       (cl-flet ((settle ()
+                   (when (and (zerop (cl-decf pending))
+                              (eq (opencode-connection-models-state connection) token))
+                     (if failed
+                         (progn
+                           (opencode-connection-invalidate-models connection)
+                           (if on-error
+                               (funcall on-error)
+                             (message "OpenCode: failed to load models")))
+                       (setf (opencode-connection-models-state connection) :loaded)
+                       (when on-success
+                         (funcall on-success
+                                  (opencode-connection-models connection)))))))
+         (opencode-client-models
+          connection
+          :success (lambda (&rest args)
+                     (when (eq (opencode-connection-models-state connection) token)
+                       (setf (opencode-connection-models connection)
+                             (plist-get args :data)))
+                     (settle))
+          :error (lambda (&rest _args)
+                   (setq failed t)
+                   (settle)))
+         (opencode-client-integrations
+          connection
+          :success (lambda (&rest args)
+                     (when (eq (opencode-connection-models-state connection) token)
+                       (setf (opencode-connection-integrations connection)
+                             (plist-get args :data)))
+                     (settle))
+          :error (lambda (&rest _args)
+                   (setq failed t)
+                   (settle))))))))
+
+(defun opencode-connection-invalidate-models (connection)
+  "Drop the cached model and integration catalogs for CONNECTION."
+  (setf (opencode-connection-models connection) nil)
+  (setf (opencode-connection-integrations connection) nil)
+  (setf (opencode-connection-models-state connection) nil))
 
 (defun opencode-connection-start (connection &optional ready-callback)
   "Start an OpenCode server for CONNECTION.
@@ -194,13 +267,17 @@ updated CONNECTION."
   (let* ((default-directory (opencode-connection-directory connection))
           (hostname (opencode-connection-hostname connection))
           (port (opencode-connection-port connection))
-          (process-environment (opencode-connection--process-environment
-                                opencode-server-environment))
+          (password (or (opencode-connection--environment-password
+                         opencode-server-environment)
+                        (opencode-connection--generate-password)))
+          (process-environment (opencode-connection--server-environment password))
           (command (list (executable-find opencode-server-command) "serve"
                          "--hostname" hostname
                          "--port" (number-to-string port)))
          (buffer (get-buffer-create (format " *opencode-server<%s>*" default-directory)))
          (process (apply #'start-process "opencode-server" buffer command)))
+    (setf (opencode-connection-username connection) "opencode")
+    (setf (opencode-connection-password connection) password)
     (set-process-filter
      process
      (lambda (proc output)

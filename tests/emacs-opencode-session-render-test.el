@@ -502,9 +502,9 @@
     (should (equal (opencode-session--task-tool-line item) "Read foo.el"))))
 
 (ert-deftest test-opencode-render/task-tool-line-running ()
-  "Format a running tool line without title."
-  (let ((item '((tool . "bash") (state . ((status . "running"))))))
-    (should (equal (opencode-session--task-tool-line item) "Bash"))))
+  "Running tools without a title use their summary line."
+  (let ((item '((tool . "shell") (state . ((status . "running") (input . ((command . "ls"))))))))
+    (should (equal (opencode-session--task-tool-line item) "✱ Shell ls"))))
 
 ;;; role-face
 
@@ -521,22 +521,21 @@
 ;;; message-error-text
 
 (ert-deftest test-opencode-render/message-error-text-with-detail ()
-  "Extract error detail message."
+  "Show the structured error message."
   (let ((msg (opencode-message-create
               :role "assistant"
-              :error '((name . "SomeError")
-                       (data . ((message . "something failed")))))))
+              :error '((type . "provider") (message . "something failed")))))
     (let ((result (opencode-session--message-error-text msg)))
       (should (stringp result))
-      (should (string-match-p "something failed" result)))))
+      (should (string-match-p "Error: something failed" result)))))
 
-(ert-deftest test-opencode-render/message-error-text-aborted ()
-  "MessageAbortedError returns nil."
-  (let ((msg (opencode-message-create
-              :role "assistant"
-              :error '((name . "MessageAbortedError")
-                       (data . ((message . "aborted")))))))
-    (should (null (opencode-session--message-error-text msg)))))
+(ert-deftest test-opencode-render/message-error-text-interrupted ()
+  "User interruptions are not shown as errors."
+  (dolist (type '("interrupted" "aborted" "cancelled"))
+    (let ((msg (opencode-message-create
+                :role "assistant"
+                :error `((type . ,type) (message . "stopped")))))
+      (should (null (opencode-session--message-error-text msg))))))
 
 (ert-deftest test-opencode-render/message-error-text-no-error ()
   "Non-assistant or no-error messages return nil."
@@ -707,6 +706,24 @@
                :type "reasoning"
                :text "let me think")))
     (should (null (opencode-session--render-message-part msg part)))))
+
+(ert-deftest test-opencode-render/display-path-through-symlink ()
+  "Resolved paths inside a symlinked session directory display relative."
+  (let* ((target (make-temp-file "oc-real" t))
+         (link (concat target "-link")))
+    (unwind-protect
+        (progn
+          (make-symbolic-link target link)
+          (with-temp-buffer
+            (setq-local opencode-session--connection
+                        (opencode-connection-create :directory (file-name-as-directory link)))
+            (should (equal (opencode-session--display-path
+                            (expand-file-name "sub/AGENTS.md" (file-truename target)))
+                           "sub/AGENTS.md"))
+            (should (equal (opencode-session--display-path "/elsewhere/x.el")
+                           "/elsewhere/x.el"))))
+      (delete-file link)
+      (delete-directory target))))
 
 (provide 'emacs-opencode-session-render-test)
 

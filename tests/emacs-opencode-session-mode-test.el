@@ -68,58 +68,108 @@
 
 ;;; message-from-info
 
-(ert-deftest test-opencode-session-mode/message-from-info ()
-  "Create a message from an info alist."
-  (let ((msg (opencode-session--message-from-info
-              '((id . "m1")
-                (sessionID . "s1")
-                (role . "assistant")
-                (providerID . "anthropic")
-                (modelID . "claude-3")
-                (time . ((created . "2024-01-01")))))))
-    (should (opencode-message-p msg))
-    (should (equal (opencode-message-id msg) "m1"))
+(ert-deftest test-opencode-session-mode/message-from-info-assistant ()
+  "Assistant messages map their content to text, reasoning, and tool parts."
+  (let* ((msg (opencode-session--message-from-info
+               '((id . "m1")
+                 (type . "assistant")
+                 (agent . "build")
+                 (model . ((id . "claude") (providerID . "anthropic") (variant . "high")))
+                 (time . ((created . 10) (completed . 20)))
+                 (cost . 0.5)
+                 (content . (((type . "reasoning") (text . "hmm"))
+                             ((type . "text") (text . "hello"))
+                             ((type . "tool") (id . "call_1") (name . "grep")
+                              (state . ((status . "completed")
+                                        (input . ((pattern . "x")))
+                                        (content . (((type . "text") (text . "a\n"))
+                                                    ((type . "text") (text . "b"))))
+                                        (metadata . ((matches . 2)))))))))
+               "s1"))
+         (parts (opencode-message-parts msg)))
     (should (equal (opencode-message-role msg) "assistant"))
     (should (equal (opencode-message-provider-id msg) "anthropic"))
-    (should (equal (opencode-message-model-id msg) "claude-3"))))
+    (should (equal (opencode-message-model-id msg) "claude"))
+    (should (equal (opencode-message-agent msg) "build"))
+    (should (equal (opencode-message-time-completed msg) 20))
+    (should (equal (mapcar #'car parts) '("m1:0" "m1:1" "call_1")))
+    (should (equal (opencode-message-part-type (cdr (nth 0 parts))) "reasoning"))
+    (should (equal (opencode-message-part-text (cdr (nth 1 parts))) "hello"))
+    (let ((tool (cdr (nth 2 parts))))
+      (should (equal (opencode-message-part-tool tool) "grep"))
+      (should (equal (opencode-message-part-session-id tool) "s1"))
+      (should (equal (alist-get 'output (opencode-message-part-state tool)) "a\nb"))
+      (should (equal (alist-get 'matches (alist-get 'metadata (opencode-message-part-state tool))) 2)))))
+
+(ert-deftest test-opencode-session-mode/message-from-info-user ()
+  "User messages become a single text part."
+  (let ((msg (opencode-session--message-from-info
+              '((id . "u1") (type . "user") (text . "hi")) "s1")))
+    (should (equal (opencode-message-role msg) "user"))
+    (should (equal (opencode-message-part-text (cdar (opencode-message-parts msg))) "hi"))))
+
+(ert-deftest test-opencode-session-mode/message-from-info-shell ()
+  "User shell commands render as a shell tool part."
+  (let* ((msg (opencode-session--message-from-info
+               '((id . "sh1") (type . "shell") (command . "ls") (status . "exited")
+                 (exit . 0) (output . ((output . "a.txt\n"))))
+               "s1"))
+         (state (opencode-message-part-state (cdar (opencode-message-parts msg)))))
+    (should (equal (opencode-message-role msg) "shell"))
+    (should (equal (alist-get 'status state) "completed"))
+    (should (equal (alist-get 'command (alist-get 'input state)) "ls"))
+    (should (equal (alist-get 'output state) "a.txt\n"))))
+
+(ert-deftest test-opencode-session-mode/message-from-info-compaction ()
+  "Compaction messages carry their status, reason, and error."
+  (let* ((msg (opencode-session--message-from-info
+               '((id . "c1") (type . "compaction") (status . "failed") (reason . "auto")
+                 (error . ((type . "x") (message . "too big"))))
+               "s1"))
+         (part (cdar (opencode-message-parts msg))))
+    (should (equal (opencode-message-part-type part) "compaction"))
+    (should (opencode-message-part-auto part))
+    (should (equal (opencode-message-part-metadata part)
+                   '((status . "failed") (error . "too big"))))))
+
+(ert-deftest test-opencode-session-mode/message-from-info-loaded-instructions ()
+  "Synthetic messages that load instruction files are shown."
+  (let ((msg (opencode-session--message-from-info
+              '((id . "y1") (type . "synthetic")
+                (metadata . ((instruction . ((paths . ("/p/AGENTS.md")))))))
+              "s1")))
+    (should (equal (opencode-message-role msg) "system"))
+    (should (equal (alist-get 'paths (opencode-message-part-metadata
+                                      (cdar (opencode-message-parts msg))))
+                   '("/p/AGENTS.md")))))
+
+(ert-deftest test-opencode-session-mode/message-from-info-hidden-types ()
+  "Bookkeeping messages are not displayed."
+  (dolist (info '(((id . "a") (type . "idle"))
+                  ((id . "b") (type . "agent-switched"))
+                  ((id . "c") (type . "model-switched"))
+                  ((id . "d") (type . "system"))
+                  ((id . "e") (type . "synthetic") (metadata . ((source . "shell"))))))
+    (should-not (opencode-session--message-from-info info "s1"))))
 
 (ert-deftest test-opencode-session-mode/message-from-info-nil ()
   "Return nil for nil info."
   (should (null (opencode-session--message-from-info nil))))
 
-;;; message-part-from-info
+;;; tool-state
 
-(ert-deftest test-opencode-session-mode/message-part-from-info ()
-  "Create a message part from an info alist."
-  (let ((part (opencode-session--message-part-from-info
-               '((id . "p1")
-                 (sessionID . "s1")
-                 (messageID . "m1")
-                 (type . "text")
-                 (text . "hello")
-                 (tool . "bash")
-                 (time . ((start . "2024-01-01") (end . "2024-01-02")))))))
-    (should (opencode-message-part-p part))
-    (should (equal (opencode-message-part-id part) "p1"))
-    (should (equal (opencode-message-part-type part) "text"))
-    (should (equal (opencode-message-part-text part) "hello"))
-    (should (equal (opencode-message-part-tool part) "bash"))
-    (should (equal (opencode-message-part-time-start part) "2024-01-01"))))
+(ert-deftest test-opencode-session-mode/tool-state-streaming-is-pending ()
+  "Streaming tool calls render as pending and drop their raw JSON input."
+  (should (equal (opencode-session--tool-state
+                  '((status . "streaming") (input . "{\"a\"")))
+                 '((status . "pending")))))
 
-(ert-deftest test-opencode-session-mode/message-part-from-compaction-info ()
-  "Create a compaction message part from an info alist."
-  (let ((part (opencode-session--message-part-from-info
-               '((id . "p1")
-                 (sessionID . "s1")
-                 (messageID . "m1")
-                 (type . "compaction")
-                 (auto . t)
-                 (overflow . t)
-                 (tail_start_id . "m-tail")))))
-    (should (equal (opencode-message-part-type part) "compaction"))
-    (should (eq (opencode-message-part-auto part) t))
-    (should (eq (opencode-message-part-overflow part) t))
-    (should (equal (opencode-message-part-tail-start-id part) "m-tail"))))
+(ert-deftest test-opencode-session-mode/tool-state-error-message ()
+  "Structured tool errors become their message."
+  (should (equal (alist-get 'error (opencode-session--tool-state
+                                    '((status . "error") (input . ((a . 1)))
+                                      (error . ((type . "t") (message . "boom"))))))
+                 "boom")))
 
 ;;; command-items
 
@@ -148,18 +198,6 @@
   "Filter out non-list items (delq removes nils)."
   (should (equal (opencode-session--command-names '("not-an-alist" ((name . "ok"))))
                  '("ok"))))
-
-;;; hydrate-parts
-
-(ert-deftest test-opencode-session-mode/hydrate-parts ()
-  "Hydrate raw parts into an alist of part structs."
-  (let ((result (opencode-session--hydrate-parts
-                 '(((id . "p1") (type . "text") (text . "hello"))
-                   ((id . "p2") (type . "tool") (tool . "bash"))))))
-    (should (= (length result) 2))
-    (should (equal (car (car result)) "p1"))
-    (should (opencode-message-part-p (cdr (car result))))
-    (should (equal (opencode-message-part-type (cdr (car result))) "text"))))
 
 ;;; classify-input
 
@@ -206,25 +244,21 @@
 
 ;;; compact command
 
-(ert-deftest test-opencode-session-mode/compact-sends-active-model ()
-  "The compact command sends the current session and active model."
+(ert-deftest test-opencode-session-mode/compact-sends-session ()
+  "The compact command queues compaction for the current session."
   (with-temp-buffer
     (opencode-session-mode)
     (setq-local opencode-session--session (opencode-session-create :id "s1"))
-    (setq-local opencode-session--provider-id "anthropic")
-    (setq-local opencode-session--model-id "claude")
-    (let (sent-connection sent-session sent-model)
+    (let (sent-connection sent-session)
       (cl-letf (((symbol-function 'opencode-session--ensure-connection)
                  (lambda (callback) (funcall callback 'conn)))
                 ((symbol-function 'opencode-client-session-compact)
-                 (lambda (connection session-id model &rest _args)
+                 (lambda (connection session-id &rest _args)
                    (setq sent-connection connection
-                         sent-session session-id
-                         sent-model model))))
+                         sent-session session-id))))
         (opencode-session-compact))
       (should (eq sent-connection 'conn))
-      (should (equal sent-session "s1"))
-      (should (equal sent-model '("anthropic" . "claude"))))))
+      (should (equal sent-session "s1")))))
 
 ;;; rename command
 
@@ -318,28 +352,21 @@
           '(((id . "explore") (mode . "subagent") (hidden . nil))))))
     (should (null (opencode-session--extract-agent-mentions "email@explore")))))
 
-;;; build-message-parts
+;;; send-input
 
-(ert-deftest test-opencode-session-mode/build-parts-text-only ()
-  "Build parts with no mentions."
+(ert-deftest test-opencode-session-mode/send-input-sends-mentioned-agents ()
+  "Prompts include the @-mentioned subagents."
   (let ((opencode-session--connection
          (opencode-connection-create :agents-raw
-          '(((id . "explore") (mode . "subagent") (hidden . nil))))))
-    (let ((parts (opencode-session--build-message-parts "hello world")))
-      (should (= (length parts) 1))
-      (should (equal (cdr (assoc "type" (car parts))) "text"))
-      (should (equal (cdr (assoc "text" (car parts))) "hello world")))))
-
-(ert-deftest test-opencode-session-mode/build-parts-with-mention ()
-  "Build parts with an @-mention."
-  (let ((opencode-session--connection
-         (opencode-connection-create :agents-raw
-          '(((id . "explore") (mode . "subagent") (hidden . nil))))))
-    (let ((parts (opencode-session--build-message-parts "hello @explore")))
-      (should (= (length parts) 2))
-      (should (equal (cdr (assoc "type" (car parts))) "text"))
-      (should (equal (cdr (assoc "type" (cadr parts))) "agent"))
-      (should (equal (cdr (assoc "name" (cadr parts))) "explore")))))
+          '(((id . "explore") (mode . "subagent") (hidden . nil)))))
+        sent)
+    (cl-letf (((symbol-function 'opencode-client-session-prompt)
+               (lambda (_conn session-id text &rest args)
+                 (setq sent (list session-id text (plist-get args :agents))))))
+      (opencode-session--send-input opencode-session--connection
+                                    (opencode-session-create :id "s1")
+                                    "hello @explore"))
+    (should (equal sent '("s1" "hello @explore" ("explore"))))))
 
 ;;; agent-completion-bounds
 
@@ -781,12 +808,14 @@ banner, causing the prompt overlay to render before the banner."
       (setq-local opencode-session--show-reasoning t)
       (opencode-session--render-buffer)
       (opencode-session-toggle-reasoning)
-      (opencode-session--update-message-part
-       '((id . "p1")
-         (sessionID . "test-session")
-         (messageID . "m1")
-         (type . "reasoning"))
-       " second")
+      (puthash "test-session" (current-buffer) opencode-session--buffers)
+      (unwind-protect
+          (opencode-session--handle-content-text
+           "session.reasoning.delta"
+           '((data . ((sessionID . "test-session")
+                      (assistantMessageID . "m1")
+                      (delta . " second")))))
+        (remhash "test-session" opencode-session--buffers))
       (opencode-session-toggle-reasoning)
       (should (string-match-p
                "first second"
@@ -868,11 +897,12 @@ Leaves point on the tool summary line."
         (should (string-match-p "Loading"
                                 (opencode-session-mode-test--transcript)))
         (funcall (plist-get (nth 2 captured) :success)
-                 :data '((info . ((id . "m1")))
-                         (parts . [((id . "p1")
-                                    (type . "tool")
-                                    (state . ((status . "completed")
-                                              (output . "fetched"))))])))
+                 :data '((id . "m1")
+                         (type . "assistant")
+                         (content . (((type . "tool") (id . "p1") (name . "grep")
+                                      (state . ((status . "completed")
+                                                (content . (((type . "text")
+                                                             (text . "fetched")))))))))))
         (should (string-match-p "fetched"
                                 (opencode-session-mode-test--transcript)))
         (should-not (string-match-p "Loading"
@@ -894,39 +924,56 @@ Leaves point on the tool summary line."
                                     (opencode-session-mode-test--transcript)))
         (should-not (opencode-session--tool-drawer-open-p "p1"))))))
 
-(ert-deftest test-opencode-session-mode/tool-output-survives-part-update ()
-  "Fetched output is kept when a later part update lacks it."
+(ert-deftest test-opencode-session-mode/tool-output-survives-terminal-event ()
+  "Fetched output is kept when the terminal tool event arrives without it."
   (with-temp-buffer
     (opencode-session-mode-test--tool-buffer-setup
-     '((status . "completed") (output . "kept")))
-    (opencode-session-toggle-tool-output)
-    (opencode-session--update-message-part
-     '((id . "p1")
-       (sessionID . "test-session")
-       (messageID . "m1")
-       (type . "tool")
-       (tool . "grep")
-       (state . ((status . "completed") (time . ((compacted . 3))))))
-     nil)
-    (should (string-match-p "kept" (opencode-session-mode-test--transcript)))))
+     '((status . "running") (output . "kept")))
+    (opencode-session--apply-tool-event
+     (car opencode-session--messages) "session.tool.success"
+     '((id . "p1") (sessionID . "test-session") (metadata . ((matches . 1)))))
+    (let ((state (opencode-message-part-state
+                  (cdar (opencode-message-parts (car opencode-session--messages))))))
+      (should (equal (alist-get 'status state) "completed"))
+      (should (equal (alist-get 'output state) "kept")))))
 
-(ert-deftest test-opencode-session-mode/tool-output-update-with-output-wins ()
-  "A part update that carries its own output replaces the stored one."
+(ert-deftest test-opencode-session-mode/tool-output-from-event-wins ()
+  "A terminal event that carries output replaces the stored one."
   (with-temp-buffer
     (opencode-session-mode-test--tool-buffer-setup
-     '((status . "completed") (output . "old")))
-    (opencode-session-toggle-tool-output)
-    (opencode-session--update-message-part
-     '((id . "p1")
-       (sessionID . "test-session")
-       (messageID . "m1")
-       (type . "tool")
-       (tool . "grep")
-       (state . ((status . "completed") (output . "new"))))
-     nil)
-    (let ((transcript (opencode-session-mode-test--transcript)))
-      (should (string-match-p "new" transcript))
-      (should-not (string-match-p "old" transcript)))))
+     '((status . "running") (output . "old")))
+    (opencode-session--apply-tool-event
+     (car opencode-session--messages) "session.tool.success"
+     '((id . "p1") (content . (((type . "text") (text . "new"))))))
+    (should (equal (alist-get 'output (opencode-message-part-state
+                                       (cdar (opencode-message-parts
+                                              (car opencode-session--messages)))))
+                   "new"))))
+
+(ert-deftest test-opencode-session-mode/reload-refetches-open-drawer-output ()
+  "Reloading history fetches output for drawers that stay open."
+  (with-temp-buffer
+    (let (fetched)
+      (cl-letf (((symbol-function 'opencode-client-session-message)
+                 (lambda (_conn _session-id message-id &rest _args)
+                   (setq fetched message-id)))
+                ((symbol-function 'opencode-client-session-inbox)
+                 (lambda (_conn _session-id &rest args)
+                   (funcall (plist-get args :success) :data nil)))
+                ((symbol-function 'opencode-client-session-messages)
+                 (lambda (_conn _session-id &rest args)
+                   (funcall (plist-get args :success)
+                            :data '(((id . "m1") (type . "assistant")
+                                     (content . (((type . "tool") (id . "p1") (name . "grep")
+                                                  (state . ((status . "completed")
+                                                            (input . ((pattern . "x"))))))))))))))
+        (opencode-session-mode-test--tool-buffer-setup
+         '((status . "completed") (output . "x")))
+        (opencode-session-toggle-tool-output)
+        (opencode-session--load-history opencode-session--connection
+                                        opencode-session--session
+                                        (current-buffer))
+        (should (equal fetched "m1"))))))
 
 (ert-deftest test-opencode-session-mode/toggle-tool-output-fetch-without-output ()
   "A fetched part with no output shows the empty placeholder, not loading."
@@ -939,9 +986,10 @@ Leaves point on the tool summary line."
          '((status . "completed")))
         (opencode-session-toggle-tool-output)
         (funcall (plist-get captured :success)
-                 :data '((parts . [((id . "p1")
-                                    (type . "tool")
-                                    (state . ((status . "completed"))))])))
+                 :data '((id . "m1")
+                         (type . "assistant")
+                         (content . (((type . "tool") (id . "p1") (name . "grep")
+                                      (state . ((status . "completed"))))))))
         (should (string-match-p "(no output)"
                                 (opencode-session-mode-test--transcript)))))))
 

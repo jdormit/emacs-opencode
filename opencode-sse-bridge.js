@@ -52,42 +52,38 @@ function parseArgs(argv) {
 // Emacs handler code and confirming which fields are accessed.
 
 function stripLargeFields(event) {
-  const type = event.type;
-  const props = event.properties;
-  if (!props) return;
+  const data = event.data;
+  if (!data) return;
 
-  // session.created / session.updated — strip summary.diffs and revert
-  if (type === "session.created" || type === "session.updated") {
-    const info = props.info;
-    if (info) {
-      if (info.summary) delete info.summary.diffs;
-      if (info.revert) {
-        delete info.revert.diff;
-        delete info.revert.snapshot;
-      }
-    }
-  }
+  // Opaque provider state (encrypted reasoning, response IDs) is never shown.
+  delete data.state;
+  delete data.providerState;
+  delete data.resultState;
+  delete data.providerContext;
 
-  // message.updated — strip summary.diffs on user messages
-  if (type === "message.updated") {
-    const info = props.info;
-    if (info && info.summary && info.summary.diffs) {
-      delete info.summary.diffs;
-    }
-  }
-
-  // message.part.updated — strip tool part state.output, state.attachments,
-  // state.input.raw (Emacs uses state.metadata.* and state.input.* instead)
-  if (type === "message.part.updated") {
-    const state = props.part && props.part.state;
-    if (state) {
-      if (state.status === "completed") {
-        delete state.output;
-        delete state.attachments;
+  switch (event.type) {
+    // Tool output is fetched on demand when a drawer opens.
+    case "session.tool.success":
+    case "session.tool.failed":
+      delete data.content;
+      break;
+    case "session.shell.ended":
+      if (data.output) delete data.output.output;
+      break;
+    // Compaction summaries, synthetic and instruction text are model-facing.
+    case "session.compaction.ended":
+    case "session.synthetic":
+    case "session.instructions.updated":
+      delete data.text;
+      break;
+    case "session.inbox.enqueued": {
+      const payload = data.item && data.item.payload;
+      if (!payload) break;
+      if (data.item.type === "synthetic") delete payload.text;
+      if (Array.isArray(payload.files)) {
+        for (const file of payload.files) delete file.data;
       }
-      if (state.input) {
-        delete state.input.raw;
-      }
+      break;
     }
   }
 }
@@ -207,4 +203,8 @@ async function main() {
   }
 }
 
-main();
+if (require.main === module) {
+  main();
+} else {
+  module.exports = { stripLargeFields };
+}

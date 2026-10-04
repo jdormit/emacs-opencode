@@ -27,24 +27,21 @@
 ;;; session-from-data
 
 (ert-deftest test-opencode/session-from-data ()
-  "Create a session struct from an alist."
+  "Create a session struct from server session info."
   (let* ((data '((id . "s1")
-                 (slug . "my-session")
-                 (version . 1)
                  (projectID . "p1")
-                 (directory . "/tmp")
+                 (location . ((directory . "/tmp/p")))
                  (title . "Test Session")
-                 (time . ((created . "2024-01-01") (updated . "2024-01-02")))
-                 (summary . "A summary")))
+                 (agent . "plan")
+                 (time . ((created . 1) (updated . 2)))))
          (session (opencode--session-from-data data)))
     (should (opencode-session-p session))
     (should (equal (opencode-session-id session) "s1"))
-    (should (equal (opencode-session-slug session) "my-session"))
+    (should (equal (opencode-session-project-id session) "p1"))
+    (should (equal (opencode-session-directory session) "/tmp/p"))
     (should (equal (opencode-session-title session) "Test Session"))
-    (should (equal (opencode-session-time-created session) "2024-01-01"))
-    (should (equal (opencode-session-time-updated session) "2024-01-02"))
-    (should (equal (opencode-session-summary session) "A summary"))
-    ;; info should be the original data
+    (should (equal (opencode-session-time-created session) 1))
+    (should (equal (opencode-session-time-updated session) 2))
     (should (equal (opencode-session-info session) data))))
 
 ;;; session-label
@@ -60,13 +57,9 @@
                  "Untitled session")))
 
 (ert-deftest test-opencode/session-label-with-identifiers ()
-  "Include slug and ID when requested."
-  (let ((result (opencode--session-label
-                 '((title . "Hello") (slug . "hello") (id . "s1"))
-                 t)))
-    (should (string-match-p "Hello" result))
-    (should (string-match-p "(hello)" result))
-    (should (string-match-p "\\[s1\\]" result))))
+  "Include the ID when requested."
+  (should (equal (opencode--session-label '((title . "Hello") (id . "s1")) t)
+                 "Hello [s1]")))
 
 (ert-deftest test-opencode/session-label-identifiers-without-slug ()
   "Only include ID when slug is nil."
@@ -119,13 +112,18 @@
 (ert-deftest test-opencode/select-session-excludes-subagents ()
   "Exclude sessions with a parent from session completion."
   (let (candidates selected-session)
-    (cl-letf (((symbol-function 'opencode-client-sessions)
+    (cl-letf (((symbol-function 'opencode-client-location)
+               (lambda (_connection &rest args)
+                 (funcall (plist-get args :success)
+                          :data '((project . ((id . "prj")))))))
+              ((symbol-function 'opencode-client-sessions)
                (lambda (_connection &rest args)
                  (should (plist-get args :roots))
+                 (should (equal (plist-get args :project) "prj"))
                  (funcall (plist-get args :success)
-                          :data [((id . "parent") (title . "Parent"))
-                                 ((id . "child") (title . "Child")
-                                  (parentID . "parent"))])))
+                          :data '(((id . "parent") (title . "Parent"))
+                                  ((id . "child") (title . "Child")
+                                   (parentID . "parent"))))))
               ((symbol-function 'completing-read)
                (lambda (_prompt collection &rest _args)
                  (setq candidates (all-completions "" collection))
@@ -136,6 +134,94 @@
          (setq selected-session session))))
     (should (equal candidates '("Parent")))
     (should (equal (opencode-session-id selected-session) "parent"))))
+
+(ert-deftest test-opencode/project-session-filter-global-uses-directory ()
+  "Sessions outside a project are filtered by directory."
+  (let ((conn (opencode-connection-create :directory "/tmp/loose/"))
+        filter)
+    (cl-letf (((symbol-function 'opencode-client-location)
+               (lambda (_connection &rest args)
+                 (funcall (plist-get args :success)
+                          :data '((project . ((id . "global"))))))))
+      (opencode--project-session-filter conn (lambda (result) (setq filter result))))
+    (should (equal filter (list :directory (directory-file-name
+                                             (file-truename "/tmp/loose/")))))))
+
+(ert-deftest test-opencode/create-session-uses-default-agent ()
+  "New sessions start with the default agent when the server has it."
+  (let ((opencode-session-default-agent "plan")
+        created)
+    (cl-letf (((symbol-function 'opencode-session--ensure-agents)
+               (lambda (_conn on-ready) (funcall on-ready '("build" "plan"))))
+              ((symbol-function 'opencode-client-session-create)
+               (lambda (_conn &rest args)
+                 (setq created (plist-get args :agent))
+                 (funcall (plist-get args :success) :data '((id . "s1"))))))
+      (opencode--create-session 'conn #'ignore))
+    (should (equal created "plan"))
+    (let ((opencode-session-default-agent "missing"))
+      (cl-letf (((symbol-function 'opencode-session--ensure-agents)
+                 (lambda (_conn on-ready) (funcall on-ready '("build"))))
+                ((symbol-function 'opencode-client-session-create)
+                 (lambda (_conn &rest args)
+                   (setq created (plist-get args :agent))
+                   (funcall (plist-get args :success) :data '((id . "s1"))))))
+        (opencode--create-session 'conn #'ignore))
+      (should-not created))))
+
+(ert-deftest test-opencode/run-server-waits-for-starting-server ()
+  "Callers that reuse a starting server run once it is healthy."
+  (let ((opencode--connections (make-hash-table :test 'equal))
+        (process (start-process "oc-test" nil "sleep" "5"))
+        ready-callback health-success calls)
+    (unwind-protect
+        (cl-letf (((symbol-function 'opencode-connection-create-for-directory)
+                   (lambda (directory) (opencode-connection-create :directory directory)))
+                  ((symbol-function 'opencode-connection-start)
+                   (lambda (connection callback)
+                     (setf (opencode-connection-process connection) process)
+                     (setq ready-callback callback)
+                     connection))
+                  ((symbol-function 'opencode--check-health)
+                   (lambda (_connection on-success _on-error)
+                     (setq health-success on-success)))
+                  ((symbol-function 'opencode-sse-open) #'ignore)
+                  ((symbol-function 'run-at-time) (lambda (&rest _) nil))
+                  ((symbol-function 'message) #'ignore))
+          (opencode-run-server "/tmp/oc-wait/" (lambda (_c) (push 'first calls)))
+          (opencode-run-server "/tmp/oc-wait/" (lambda (_c) (push 'second calls)))
+          (should-not calls)
+          (funcall ready-callback process)
+          (funcall health-success)
+          (should (equal (nreverse calls) '(first second)))
+          (setq calls nil)
+          (opencode-run-server "/tmp/oc-wait/" (lambda (_c) (push 'third calls)))
+          (should (equal calls '(third))))
+      (delete-process process))))
+
+(ert-deftest test-opencode/send-context-captures-calling-buffer ()
+  "Context comes from the buffer that ran the command, not a later one."
+  (let (sent)
+    (cl-letf (((symbol-function 'opencode-run-server)
+               (lambda (_dir on-ready) (run-with-timer 0 nil on-ready 'conn)))
+              ((symbol-function 'opencode--select-session)
+               (lambda (_conn _prompt on-selected)
+                 (funcall on-selected (opencode-session-create :id "s1") nil)))
+              ((symbol-function 'opencode--ensure-session-buffer)
+               (lambda (_session _conn on-ready)
+                 (with-temp-buffer
+                   (cl-letf (((symbol-function 'opencode-session-insert-input)
+                              (lambda (input) (setq sent input)))
+                             ((symbol-function 'opencode-session-send-input) #'ignore))
+                     (funcall on-ready (current-buffer)))))))
+      (with-temp-buffer
+        (insert "unique context line\n")
+        (opencode-send-context-to-session "/tmp/" "question"))
+      (with-temp-buffer
+        (insert "wrong buffer\n")
+        (sit-for 0.05)))
+    (should (string-match-p "unique context line" sent))
+    (should-not (string-match-p "wrong buffer" sent))))
 
 (provide 'emacs-opencode-test)
 

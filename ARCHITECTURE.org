@@ -96,6 +96,21 @@ while the fallback backend parses the stream in Emacs. Both paths share the same
 event registry and avoid parsing or retaining events that have no registered
 handler.
 
+The server streams fine-grained session events rather than finished messages:
+a step starts an assistant message, text and reasoning arrive as started,
+delta, and ended events, and each tool call moves through input, called,
+progress, and success or failure. Handlers apply these events to the buffer's
+message and part structs, mirroring the server's own projection, so a buffer
+built from live events renders the same as one loaded from history. History
+loads read the server's projected messages and convert them into the same
+structs.
+
+The stream is lossy across disconnects: the server does not replay events a
+client missed. When a stream exits while its server is still running, the
+client reconnects with backoff. The server announces each new stream with
+=server.connected=, and on a reconnect the client reloads the transcript, info,
+and busy state of every session buffer on that connection.
+
 Handlers receive the originating connection as metadata. That matters when more
 than one OpenCode server is running: permission replies, question replies, and
 subagent updates must be routed back to the server that produced the event, not
@@ -122,6 +137,10 @@ handling does not block on user input.
 
 * Failure And Recovery
 Server startup fails fast if readiness or health checks do not complete in time.
+Each server generates a password at startup and prints it after its URL; the
+client reads both before treating the server as ready, and authenticates every
+request and stream with it. Commands that reuse a server that is still
+starting wait until its health check passes.
 Session buffers can reconnect by starting a new server for their session
 directory and updating their buffer-local connection. Process output stays in
 dedicated hidden buffers so UI buffers remain focused on user-facing session

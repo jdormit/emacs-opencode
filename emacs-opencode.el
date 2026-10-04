@@ -20,9 +20,9 @@
 
 (defcustom opencode-session-list-limit 1000
   "Maximum number of sessions to request when listing sessions.
-The OpenCode server caps `GET /session' at 100 sessions by default;
-this option raises that limit for the session-selection completion
-table.  A value of nil uses the server default."
+The OpenCode server returns 50 sessions by default; this option raises
+that limit for the session-selection completion table.  A value of nil
+uses the server default."
   :type '(choice (const :tag "Server default" nil) integer)
   :group 'emacs-opencode)
 
@@ -66,39 +66,23 @@ ON-SUCCESS and ON-ERROR are called with request args."
    :success on-success
    :error on-error))
 
-(defun opencode--ready-timeout (directory connection)
-  "Handle readiness timeout for DIRECTORY and CONNECTION."
+(defun opencode--ready-timeout (_directory connection)
+  "Stop CONNECTION after its server failed to become ready in time."
   (opencode-connection-stop connection)
   (error "OpenCode server did not become ready within %ss" opencode-ready-timeout))
 
 (defun opencode--session-from-data (data)
-  "Create a session object from DATA."
-  (let* ((time (alist-get 'time data))
-         (created (alist-get 'created time))
-         (updated (alist-get 'updated time)))
-    (opencode-session-create
-     :id (alist-get 'id data)
-     :slug (alist-get 'slug data)
-     :version (alist-get 'version data)
-     :project-id (alist-get 'projectID data)
-     :directory (alist-get 'directory data)
-     :title (alist-get 'title data)
-     :time-created created
-     :time-updated updated
-     :summary (alist-get 'summary data)
-     :info data)))
+  "Create a session object from server session DATA."
+  (opencode-session--session-from-info data))
 
 (defun opencode--session-label (info &optional include-identifiers)
   "Return a display label for session INFO.
 
-When INCLUDE-IDENTIFIERS is non-nil, include slug and ID." 
+When INCLUDE-IDENTIFIERS is non-nil, include the session ID."
   (let ((title (or (alist-get 'title info) "Untitled session"))
-        (slug (alist-get 'slug info))
         (session-id (alist-get 'id info)))
-    (if include-identifiers
-        (concat title
-                (when slug (format " (%s)" slug))
-                (when session-id (format " [%s]" session-id)))
+    (if (and include-identifiers session-id)
+        (format "%s [%s]" title session-id)
       title)))
 
 (defun opencode--session-items (data)
@@ -155,11 +139,38 @@ When INCLUDE-IDENTIFIERS is non-nil, include slug and ID."
           (setq ordered-items (append ordered-items (list item))))))
     ordered-items))
 
+(defun opencode--project-session-filter (connection on-filter)
+  "Call ON-FILTER with keyword args that list CONNECTION's project sessions.
+Sessions outside a version-controlled project share one global project, so
+those are narrowed to the connection directory instead."
+  (opencode-client-location
+   connection
+   :success (lambda (&rest args)
+              (let* ((project (alist-get 'project (plist-get args :data)))
+                     (project-id (alist-get 'id project)))
+                (funcall on-filter
+                         (if (and project-id (not (equal project-id "global")))
+                             (list :project project-id)
+                           (list :directory (opencode-client--location-directory
+                                             connection))))))
+   :error (lambda (&rest _args)
+            (error "Failed to resolve the OpenCode project"))))
+
 (defun opencode--select-session (connection prompt on-selected)
   "Prompt for a session via CONNECTION using PROMPT.
 
 Call ON-SELECTED with the selected session and session info data."
-  (opencode-client-sessions
+  (opencode--project-session-filter
+   connection
+   (lambda (filter)
+     (apply #'opencode--select-session-matching connection prompt on-selected filter))))
+
+(defun opencode--select-session-matching (connection prompt on-selected &rest filter)
+  "Prompt for a CONNECTION session matching FILTER using PROMPT.
+FILTER holds keyword arguments for `opencode-client-sessions'.  Call
+ON-SELECTED with the selected session and session info data."
+  (apply
+   #'opencode-client-sessions
    connection
    :limit opencode-session-list-limit
    :roots t
@@ -181,7 +192,8 @@ Call ON-SELECTED with the selected session and session info data."
                      (session (opencode--session-from-data info)))
                 (funcall on-selected session info)))
    :error (lambda (&rest _args)
-            (error "Failed to fetch OpenCode sessions"))))
+            (error "Failed to fetch OpenCode sessions"))
+   filter))
 
 (defun opencode--ensure-session-buffer (session connection &optional on-ready)
   "Open or reuse a buffer for SESSION using CONNECTION.
@@ -260,10 +272,17 @@ once the server is ready."
   (let* ((normalized (opencode--normalize-directory directory))
          (existing (opencode--get-connection normalized)))
     (if (and existing (opencode-connection-alive-p existing))
-        (progn
-          (message "OpenCode already running for %s" normalized)
-          (when on-ready
+        (let ((process (opencode-connection-process existing)))
+          (cond
+           ((null on-ready))
+           ((process-get process 'opencode-healthy)
             (funcall on-ready existing))
+           (t
+            ;; Still starting: run once the server answers requests.
+            (process-put process 'opencode-waiting
+                         (append (process-get process 'opencode-waiting)
+                                 (list on-ready)))))
+          (message "OpenCode already running for %s" normalized)
           existing)
       (when existing
         (opencode-sse-close existing)
@@ -280,15 +299,36 @@ once the server is ready."
            (opencode--check-health
             connection
             (lambda (&rest _args)
-              (opencode--register-connection normalized connection)
-              (message "Started OpenCode server for %s" normalized)
-              (when on-ready
-                (funcall on-ready connection)))
+              (let ((process (opencode-connection-process connection)))
+                (opencode--register-connection normalized connection)
+                (process-put process 'opencode-healthy t)
+                (message "Started OpenCode server for %s" normalized)
+                (dolist (callback (cons on-ready (process-get process 'opencode-waiting)))
+                  (when callback
+                    (funcall callback connection)))
+                (process-put process 'opencode-waiting nil)))
             (lambda (&rest _args)
               (error "OpenCode server failed to become healthy for %s" normalized)))
            (opencode-sse-open connection)))
         (opencode--register-connection normalized connection)
         connection))))
+
+(defun opencode--create-session (connection on-created)
+  "Create a session on CONNECTION and call ON-CREATED with it.
+The session starts with `opencode-session-default-agent' when the server
+offers that agent."
+  (opencode-session--ensure-agents
+   connection
+   (lambda (agents)
+     (opencode-client-session-create
+      connection
+      :agent (car (member opencode-session-default-agent agents))
+      :success (lambda (&rest args)
+                 (funcall on-created (opencode--session-from-data (plist-get args :data))))
+      :error (lambda (&rest args)
+               (let ((detail (opencode-client-format-error args)))
+                 (error "Failed to create OpenCode session%s"
+                        (if detail (format " (%s)" detail) ""))))))))
 
 ;;;###autoload
 (defun opencode (directory)
@@ -298,16 +338,10 @@ once the server is ready."
     (opencode-run-server
      normalized
      (lambda (connection)
-       (opencode-client-session-create
+       (opencode--create-session
         connection
-        :success (lambda (&rest args)
-                   (let* ((data (plist-get args :data))
-                          (session (opencode--session-from-data data)))
-                     (opencode-session-open session connection)))
-        :error (lambda (&rest args)
-                 (let ((detail (opencode-client-format-error args)))
-                   (error "Failed to create OpenCode session%s"
-                          (if detail (format " (%s)" detail) "")))))))))
+        (lambda (session)
+          (opencode-session-open session connection)))))))
 
 ;;;###autoload
 (defun opencode-ask (directory prompt)
@@ -320,22 +354,16 @@ once the server is ready."
     (opencode-run-server
      normalized
      (lambda (connection)
-       (opencode-client-session-create
+       (opencode--create-session
         connection
-        :success (lambda (&rest args)
-                   (let* ((data (plist-get args :data))
-                          (session (opencode--session-from-data data)))
-                     (opencode-session-open
-                      session
-                      connection
-                      (lambda (buffer)
-                        (with-current-buffer buffer
-                          (opencode-session-insert-input prompt)
-                          (opencode-session-send-input))))))
-        :error (lambda (&rest args)
-                 (let ((detail (opencode-client-format-error args)))
-                   (error "Failed to create OpenCode session%s"
-                          (if detail (format " (%s)" detail) "")))))))))
+        (lambda (session)
+          (opencode-session-open
+           session
+           connection
+           (lambda (buffer)
+             (with-current-buffer buffer
+               (opencode-session-insert-input prompt)
+               (opencode-session-send-input))))))))))
 
 (defun opencode--contextual-snippet ()
   "Return contextual buffer text and metadata.
@@ -447,7 +475,9 @@ When called interactively, prompt for a session then INPUT."
 
 When called interactively, prompt for a session then PROMPT." 
   (interactive (list (opencode--read-directory "OpenCode directory: ") nil))
-  (let ((normalized (opencode--normalize-directory directory)))
+  (let ((normalized (opencode--normalize-directory directory))
+        ;; Capture the context now; the callbacks below run in other buffers.
+        (context (opencode--contextual-snippet)))
     (opencode-run-server
      normalized
      (lambda (connection)
@@ -456,7 +486,6 @@ When called interactively, prompt for a session then PROMPT."
         "OpenCode session: "
         (lambda (session _info)
           (let* ((input prompt)
-                 (context (opencode--contextual-snippet))
                  (final-input (if input
                                   input
                                 (read-from-minibuffer "OpenCode prompt: " nil nil nil
