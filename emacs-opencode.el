@@ -74,6 +74,7 @@ ON-SUCCESS and ON-ERROR are called with request args."
 (defun opencode--session-from-data (data)
   "Create a session object from DATA."
   (let* ((time (alist-get 'time data))
+         (location (alist-get 'location data))
          (created (alist-get 'created time))
          (updated (alist-get 'updated time)))
     (opencode-session-create
@@ -81,7 +82,8 @@ ON-SUCCESS and ON-ERROR are called with request args."
      :slug (alist-get 'slug data)
      :version (alist-get 'version data)
      :project-id (alist-get 'projectID data)
-     :directory (alist-get 'directory data)
+     :directory (or (alist-get 'directory location)
+                    (alist-get 'directory data))
      :title (alist-get 'title data)
      :time-created created
      :time-updated updated
@@ -162,7 +164,6 @@ Call ON-SELECTED with the selected session and session info data."
   (opencode-client-sessions
    connection
    :limit opencode-session-list-limit
-   :roots t
    :success (lambda (&rest args)
               (let* ((data (plist-get args :data))
                      (items (cl-remove-if

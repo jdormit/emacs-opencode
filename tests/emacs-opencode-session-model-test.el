@@ -2,6 +2,7 @@
 
 (require 'ert)
 (require 'emacs-opencode-session-model)
+(require 'emacs-opencode-session)
 
 ;;; normalize-agents
 
@@ -232,6 +233,61 @@
   (let ((result (opencode-session--provider-auth-methods "unknown" nil)))
     (should (= (length result) 1))
     (should (equal (alist-get 'type (car result)) "api"))))
+
+;;; push-agent / push-model
+
+(ert-deftest test-opencode-model/push-agent ()
+  "Push the selected agent to the connected server."
+  (with-temp-buffer
+    (setq-local opencode-session--connection
+                (opencode-connection-create :base-url "http://127.0.0.1:4096"))
+    (setq-local opencode-session--session (opencode-session-create :id "ses_1"))
+    (let (captured)
+      (cl-letf (((symbol-function 'opencode-client-session-set-agent)
+                 (lambda (_conn session-id agent &rest _args)
+                   (setq captured (list session-id agent)))))
+        (opencode-session--push-agent "build"))
+      (should (equal captured '("ses_1" "build"))))))
+
+(ert-deftest test-opencode-model/push-agent-without-session ()
+  "Do not push an agent when no session is connected."
+  (with-temp-buffer
+    (setq-local opencode-session--connection
+                (opencode-connection-create :base-url "http://127.0.0.1:4096"))
+    (let (called)
+      (cl-letf (((symbol-function 'opencode-client-session-set-agent)
+                 (lambda (&rest _args) (setq called t))))
+        (opencode-session--push-agent "build"))
+      (should-not called))))
+
+(ert-deftest test-opencode-model/push-model-includes-variant ()
+  "Push the active model and variant to the connected server."
+  (with-temp-buffer
+    (setq-local opencode-session--connection
+                (opencode-connection-create :base-url "http://127.0.0.1:4096"))
+    (setq-local opencode-session--session (opencode-session-create :id "ses_1"))
+    (setq-local opencode-session--provider-id "anthropic")
+    (setq-local opencode-session--model-id "claude")
+    (setq-local opencode-session--variant "thinking")
+    (let (captured)
+      (cl-letf (((symbol-function 'opencode-client-session-set-model)
+                 (lambda (_conn session-id model &rest args)
+                   (setq captured (list session-id model
+                                        (plist-get args :variant))))))
+        (opencode-session--push-model))
+      (should (equal captured '("ses_1" ("anthropic" . "claude") "thinking"))))))
+
+(ert-deftest test-opencode-model/push-model-without-model ()
+  "Do not push a model when none is selected."
+  (with-temp-buffer
+    (setq-local opencode-session--connection
+                (opencode-connection-create :base-url "http://127.0.0.1:4096"))
+    (setq-local opencode-session--session (opencode-session-create :id "ses_1"))
+    (let (called)
+      (cl-letf (((symbol-function 'opencode-client-session-set-model)
+                 (lambda (&rest _args) (setq called t))))
+        (opencode-session--push-model))
+      (should-not called))))
 
 (provide 'emacs-opencode-session-model-test)
 

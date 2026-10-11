@@ -87,6 +87,27 @@
   "Return nil for nil info."
   (should (null (opencode-session--message-from-info nil))))
 
+(ert-deftest test-opencode-session-mode/message-from-info-v2 ()
+  "Map a V2 message alist: type as role, nested model, time.created."
+  (let ((msg (opencode-session--message-from-info
+              '((id . "msg_1")
+                (sessionID . "s1")
+                (type . "assistant")
+                (agent . "build")
+                (model . ((id . "claude")
+                          (providerID . "anthropic")
+                          (variant . "thinking")))
+                (time . ((created . 1700000000000)
+                         (completed . 1700000001000)))
+                (finish . "stop")))))
+    (should (equal (opencode-message-role msg) "assistant"))
+    (should (equal (opencode-message-provider-id msg) "anthropic"))
+    (should (equal (opencode-message-model-id msg) "claude"))
+    (should (equal (opencode-message-agent msg) "build"))
+    (should (equal (opencode-message-time-created msg) 1700000000000))
+    (should (equal (opencode-message-time-completed msg) 1700000001000))
+    (should (equal (opencode-message-finish msg) "stop"))))
+
 ;;; message-part-from-info
 
 (ert-deftest test-opencode-session-mode/message-part-from-info ()
@@ -105,6 +126,39 @@
     (should (equal (opencode-message-part-text part) "hello"))
     (should (equal (opencode-message-part-tool part) "bash"))
     (should (equal (opencode-message-part-time-start part) "2024-01-01"))))
+
+(ert-deftest test-opencode-session-mode/message-part-from-info-v2-tool ()
+  "Map a V2 tool part: name as tool, state.content as output."
+  (let* ((info '((id . "call_1")
+                 (sessionID . "s1")
+                 (messageID . "m1")
+                 (type . "tool")
+                 (name . "bash")
+                 (time . ((created . 1700000000000)
+                          (completed . 1700000001000)))
+                 (state . ((status . "completed")
+                           (input . ((command . "echo hi")))
+                           (content . [((type . "text") (text . "hi\n"))
+                                       ((type . "text") (text . "bye"))])
+                           (metadata . ((status . "completed")))))))
+         (part (opencode-session--message-part-from-info info))
+         (state (opencode-message-part-state part)))
+    (should (equal (opencode-message-part-tool part) "bash"))
+    (should (equal (opencode-message-part-time-start part) 1700000000000))
+    (should (equal (opencode-message-part-time-end part) 1700000001000))
+    (should (equal (alist-get 'status state) "completed"))
+    (should (equal (alist-get 'output state) "hi\nbye"))
+    (should (equal (alist-get 'input state) '((command . "echo hi"))))))
+
+(ert-deftest test-opencode-session-mode/message-part-from-info-v2-no-content ()
+  "A V2 tool part without content keeps its state unchanged."
+  (let* ((info '((id . "call_1")
+                 (type . "tool")
+                 (name . "read")
+                 (state . ((status . "running")
+                           (input . ((path . "foo.el")))))))
+         (part (opencode-session--message-part-from-info info)))
+    (should (null (alist-get 'output (opencode-message-part-state part))))))
 
 (ert-deftest test-opencode-session-mode/message-part-from-compaction-info ()
   "Create a compaction message part from an info alist."
@@ -161,6 +215,188 @@
     (should (opencode-message-part-p (cdr (car result))))
     (should (equal (opencode-message-part-type (cdr (car result))) "text"))))
 
+;;; hydrate-content (V2)
+
+(ert-deftest test-opencode-session-mode/hydrate-content ()
+  "Text and reasoning parts get positional ids; tool parts keep theirs."
+  (let ((result (opencode-session--hydrate-content
+                 '(((type . "reasoning") (text . "hmm"))
+                   ((type . "tool") (id . "call_1") (name . "read")
+                    (state . ((status . "completed")
+                              (input . ((filePath . "a.el")))
+                              (content . (((type . "text") (text . "out")))))))
+                   ((type . "text") (text . "hello"))))))
+    (should (equal (mapcar #'car result) '("reasoning-0" "call_1" "text-2")))
+    (should (equal (opencode-message-part-type (cdr (nth 0 result))) "reasoning"))
+    (should (equal (opencode-message-part-id (cdr (nth 1 result))) "call_1"))
+    (should (equal (opencode-message-part-type (cdr (nth 2 result))) "text"))))
+
+(ert-deftest test-opencode-session-mode/hydrate-content-list-input ()
+  "Content given as a list hydrates the same way."
+  (let ((result (opencode-session--hydrate-content
+                 '(((type . "text") (text . "a"))
+                   ((type . "text") (text . "b"))))))
+    (should (equal (mapcar #'car result) '("text-0" "text-1")))))
+
+;;; hydrate-message (V2 history hydration)
+
+(ert-deftest test-opencode-session-mode/hydrate-message-v2-assistant ()
+  "A V2 assistant message hydrates its content into parts."
+  (let ((opencode-session--buffers (make-hash-table :test 'equal))
+        (buffer (generate-new-buffer " *oc-hydrate-assistant*")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (opencode-session-mode)
+          (setq-local opencode-session--session (opencode-session-create :id "s1"))
+          (opencode-session--hydrate-message
+           '((id . "msg_1")
+             (type . "assistant")
+             (time . ((created . 1000)))
+             (content . (((type . "reasoning") (text . "hmm"))
+                         ((type . "text") (text . "hi"))
+                         ((type . "tool") (id . "call_1") (name . "read")
+                          (state . ((status . "completed")
+                                    (input . ((filePath . "a.el"))))))))))
+          (let* ((message (car opencode-session--messages))
+                 (parts (opencode-message-parts message)))
+            (should (= (length opencode-session--messages) 1))
+            (should (equal (opencode-message-role message) "assistant"))
+            (should (equal (mapcar #'car parts)
+                           '("reasoning-0" "text-1" "call_1")))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest test-opencode-session-mode/hydrate-message-v2-user ()
+  "A V2 user message carries its text on the message."
+  (let ((opencode-session--buffers (make-hash-table :test 'equal))
+        (buffer (generate-new-buffer " *oc-hydrate-user*")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (opencode-session-mode)
+          (setq-local opencode-session--session (opencode-session-create :id "s1"))
+          (opencode-session--hydrate-message
+           '((id . "msg_2") (type . "user") (time . ((created . 2000))) (text . "hello")))
+          (let ((message (car opencode-session--messages)))
+            (should (equal (opencode-message-role message) "user"))
+            (should (equal (opencode-message-text message) "hello"))
+            (should (null (opencode-message-parts message)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest test-opencode-session-mode/hydrate-message-v2-compaction ()
+  "A completed V2 compaction message attaches a boundary part."
+  (let ((opencode-session--buffers (make-hash-table :test 'equal))
+        (buffer (generate-new-buffer " *oc-hydrate-compaction*")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (opencode-session-mode)
+          (setq-local opencode-session--session (opencode-session-create :id "s1"))
+          (opencode-session--hydrate-message
+           '((id . "msg_3") (type . "compaction") (status . "completed")
+             (reason . "auto") (time . ((created . 3000)))))
+          (let* ((message (car opencode-session--messages))
+                 (entry (car (opencode-message-parts message)))
+                 (part (cdr entry)))
+            (should (equal (opencode-message-role message) "compaction"))
+            (should (equal (car entry) "msg_3-compaction"))
+            (should (equal (opencode-message-part-type part) "compaction"))
+            (should (opencode-message-part-auto part))
+            (should (opencode-message-part-time-end part))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest test-opencode-session-mode/hydrate-message-v2-shell ()
+  "A V2 shell message renders as a command/output block."
+  (let ((opencode-session--buffers (make-hash-table :test 'equal))
+        (buffer (generate-new-buffer " *oc-hydrate-shell*")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (opencode-session-mode)
+          (setq-local opencode-session--session (opencode-session-create :id "s1"))
+          (opencode-session--hydrate-message
+           '((id . "msg_4") (type . "shell") (command . "ls -la")
+             (output . ((output . "a.el\nb.el\n")))
+             (time . ((created . 4000)))))
+          (should (equal (opencode-message-text (car opencode-session--messages))
+                         "$ ls -la\na.el\nb.el\n")))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest test-opencode-session-mode/hydrate-message-v1-shape ()
+  "Legacy `(info parts)' items still hydrate through the fallback path."
+  (let ((opencode-session--buffers (make-hash-table :test 'equal))
+        (buffer (generate-new-buffer " *oc-hydrate-v1*")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (opencode-session-mode)
+          (setq-local opencode-session--session (opencode-session-create :id "s1"))
+          (opencode-session--hydrate-message
+           '((info . ((id . "msg_9") (sessionID . "s1") (type . "assistant")))
+             (parts . [((id . "p1") (type . "text") (text . "legacy"))])))
+          (let* ((message (car opencode-session--messages))
+                 (part (cdr (car (opencode-message-parts message)))))
+            (should (equal (opencode-message-role message) "assistant"))
+            (should (equal (opencode-message-part-text part) "legacy"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+;;; load-history (paged history hydration)
+
+(ert-deftest test-opencode-session-mode/load-history-pages-till-exhausted ()
+  "load-history follows cursor pages oldest-first and renders them."
+  (let ((opencode-session--buffers (make-hash-table :test 'equal))
+        (calls nil)
+        (done nil)
+        (buffer (generate-new-buffer " *oc-load-history*")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (opencode-session-mode)
+          (setq-local opencode-session--session (opencode-session-create :id "s1"))
+          (let ((connection (opencode-connection-create
+                             :base-url "http://127.0.0.1:9999")))
+            (cl-letf (((symbol-function 'request)
+                       (lambda (&rest request-args)
+                         (let* ((url (car request-args))
+                                (kwargs (cdr request-args))
+                                (parser (plist-get kwargs :parser))
+                                (success (plist-get kwargs :success))
+                                (params (plist-get kwargs :params))
+                                (cursor (cdr (assoc "cursor" params)))
+                                (order (cdr (assoc "order" params))))
+                           ;; Only the message list requests come through
+                           ;; here; the form sync that follows finalizes
+                           ;; the buffer through a separate endpoint and
+                           ;; must not be counted against the page calls.
+                           (if (not (string-match-p "/message" url))
+                               (funcall success :data nil)
+                             (push (list order cursor) calls)
+                             (with-temp-buffer
+                               (insert (json-encode
+                                        (if (null cursor)
+                                            '((data . [((id . "m1") (type . "user") (text . "one"))
+                                                       ((id . "m2") (type . "user") (text . "two"))])
+                                              (cursor . ((next . "cur2") (previous . nil))))
+                                          '((data . [((id . "m3") (type . "user") (text . "three"))])
+                                            (cursor . ((next . nil) (previous . "cur2")))))))
+                               (goto-char (point-min))
+                               (funcall success
+                                        :data (when parser (funcall parser)))))))))
+              (opencode-session--load-history
+               connection opencode-session--session buffer
+               (lambda (_b) (setq done t)))
+              (should done)
+              (should (= (length opencode-session--messages) 3))
+              (should (equal (mapcar (lambda (m) (opencode-message-text m))
+                                     opencode-session--messages)
+                             '("one" "two" "three")))
+              ;; The order parameter is sent only on the first page; the
+              ;; cursor alone drives the following pages.
+              (should (equal (nreverse calls)
+                             (list (list "asc" nil)
+                                   (list nil "cur2"))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))))))
+
 ;;; classify-input
 
 (ert-deftest test-opencode-session-mode/classify-input-message ()
@@ -206,25 +442,23 @@
 
 ;;; compact command
 
-(ert-deftest test-opencode-session-mode/compact-sends-active-model ()
-  "The compact command sends the current session and active model."
+(ert-deftest test-opencode-session-mode/compact-sends-session ()
+  "The compact command sends the current session."
   (with-temp-buffer
     (opencode-session-mode)
     (setq-local opencode-session--session (opencode-session-create :id "s1"))
     (setq-local opencode-session--provider-id "anthropic")
     (setq-local opencode-session--model-id "claude")
-    (let (sent-connection sent-session sent-model)
+    (let (sent-connection sent-session)
       (cl-letf (((symbol-function 'opencode-session--ensure-connection)
                  (lambda (callback) (funcall callback 'conn)))
                 ((symbol-function 'opencode-client-session-compact)
-                 (lambda (connection session-id model &rest _args)
+                 (lambda (connection session-id &rest _args)
                    (setq sent-connection connection
-                         sent-session session-id
-                         sent-model model))))
+                         sent-session session-id))))
         (opencode-session-compact))
       (should (eq sent-connection 'conn))
-      (should (equal sent-session "s1"))
-      (should (equal sent-model '("anthropic" . "claude"))))))
+      (should (equal sent-session "s1")))))
 
 ;;; rename command
 
@@ -256,6 +490,29 @@
             (should (equal (opencode-session-title opencode-session--session)
                            "New title"))
             (should (equal (buffer-name) "*OpenCode: New title*"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest test-opencode-session-mode/rename-applies-title-without-response ()
+  "Rename applies the title locally when the server returns no body."
+  (let ((buffer (generate-new-buffer "*OpenCode: Old title*")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (opencode-session-mode)
+          (setq-local opencode-session--session
+                      (opencode-session-create :id "s1" :title "Old title"))
+          (cl-letf (((symbol-function 'read-string)
+                     (lambda (&rest _args) "New title"))
+                    ((symbol-function 'opencode-session--ensure-connection)
+                     (lambda (callback) (funcall callback 'conn)))
+                    ((symbol-function 'opencode-client-session-rename)
+                     (lambda (_connection _session-id _title &rest args)
+                       ;; V2 PATCH returns an empty body.
+                       (funcall (plist-get args :success)))))
+            (opencode-session-rename))
+          (should (equal (opencode-session-title opencode-session--session)
+                         "New title"))
+          (should (equal (buffer-name) "*OpenCode: New title*")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -318,28 +575,40 @@
           '(((id . "explore") (mode . "subagent") (hidden . nil))))))
     (should (null (opencode-session--extract-agent-mentions "email@explore")))))
 
-;;; build-message-parts
+;;; agent-attachments
 
-(ert-deftest test-opencode-session-mode/build-parts-text-only ()
-  "Build parts with no mentions."
+(ert-deftest test-opencode-session-mode/agent-attachments-none ()
+  "Return no attachments without mentions."
   (let ((opencode-session--connection
          (opencode-connection-create :agents-raw
           '(((id . "explore") (mode . "subagent") (hidden . nil))))))
-    (let ((parts (opencode-session--build-message-parts "hello world")))
-      (should (= (length parts) 1))
-      (should (equal (cdr (assoc "type" (car parts))) "text"))
-      (should (equal (cdr (assoc "text" (car parts))) "hello world")))))
+    (should (null (opencode-session--agent-attachments "hello world")))))
 
-(ert-deftest test-opencode-session-mode/build-parts-with-mention ()
-  "Build parts with an @-mention."
+(ert-deftest test-opencode-session-mode/agent-attachments-with-mention ()
+  "Return an agent attachment for an @-mention."
   (let ((opencode-session--connection
          (opencode-connection-create :agents-raw
           '(((id . "explore") (mode . "subagent") (hidden . nil))))))
-    (let ((parts (opencode-session--build-message-parts "hello @explore")))
-      (should (= (length parts) 2))
-      (should (equal (cdr (assoc "type" (car parts))) "text"))
-      (should (equal (cdr (assoc "type" (cadr parts))) "agent"))
-      (should (equal (cdr (assoc "name" (cadr parts))) "explore")))))
+    (should (equal (opencode-session--agent-attachments "hello @explore")
+                   '(((name . "explore")))))))
+
+;;; send-input
+
+(ert-deftest test-opencode-session-mode/send-input-passes-text-and-attachments ()
+  "Send input passes the raw text plus @-mention agent attachments."
+  (with-temp-buffer
+    (setq-local opencode-session--connection
+                (opencode-connection-create :agents-raw
+                 '(((id . "explore") (mode . "subagent") (hidden . nil)))))
+    (let (captured)
+      (cl-letf (((symbol-function 'opencode-client-session-prompt-async)
+                 (lambda (_conn session-id text &rest args)
+                   (setq captured (list session-id text
+                                        (plist-get args :agents))))))
+        (opencode-session--send-input
+         'connection (opencode-session-create :id "ses_1") "hello @explore"))
+      (should (equal captured
+                     '("ses_1" "hello @explore" (((name . "explore")))))))))
 
 ;;; agent-completion-bounds
 
@@ -874,6 +1143,32 @@ Leaves point on the tool summary line."
                                     (state . ((status . "completed")
                                               (output . "fetched"))))])))
         (should (string-match-p "fetched"
+                                (opencode-session-mode-test--transcript)))
+        (should-not (string-match-p "Loading"
+                                    (opencode-session-mode-test--transcript)))))))
+
+(ert-deftest test-opencode-session-mode/toggle-tool-output-fetch-v2-content ()
+  "A V2 fetched message maps state.content into the drawer output."
+  (with-temp-buffer
+    (let (captured)
+      (cl-letf (((symbol-function 'opencode-client-session-message)
+                 (lambda (_conn _session-id _message-id &rest args)
+                   (setq captured args)))
+                ((symbol-function 'message) #'ignore))
+        (opencode-session-mode-test--tool-buffer-setup
+         '((status . "completed")))
+        (opencode-session-toggle-tool-output)
+        (should (string-match-p "Loading"
+                                (opencode-session-mode-test--transcript)))
+        (funcall (plist-get captured :success)
+                 :data '((info . ((id . "m1")))
+                         (content . [((id . "p1")
+                                      (type . "tool")
+                                      (name . "bash")
+                                      (state . ((status . "completed")
+                                                (content . [((type . "text")
+                                                             (text . "fetched-v2"))]))))])))
+        (should (string-match-p "fetched-v2"
                                 (opencode-session-mode-test--transcript)))
         (should-not (string-match-p "Loading"
                                     (opencode-session-mode-test--transcript)))))))

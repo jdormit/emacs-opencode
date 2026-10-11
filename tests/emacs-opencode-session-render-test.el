@@ -708,6 +708,91 @@
                :text "let me think")))
     (should (null (opencode-session--render-message-part msg part)))))
 
+;;; form blocks
+
+(defun opencode-render-test--form-state (&optional status answers)
+  "Return a form-state fixture with STATUS and ANSWERS."
+  (opencode-session--form-state-create
+   :form-id "frm_1"
+   :session-id "ses_1"
+   :form `((title . "Deploy")
+           (fields .
+            [((key . "env") (type . "string") (title . "Environment"))
+             ((key . "token") (type . "external") (title . "Token")
+              (url . "https://example.com/oauth"))]))
+   :status status
+   :answers answers))
+
+(ert-deftest test-opencode-render/form-block-text-pending ()
+  "Pending forms show the title, fields and an awaiting line."
+  (let ((text (opencode-session--form-block-text
+               (opencode-render-test--form-state 'pending))))
+    (should (string-match-p "Deploy" text))
+    (should (string-match-p "\[awaiting\]" text))
+    (should (string-match-p "Environment" text))
+    (should (string-match-p "Awaiting your answer" text))
+    (should (string-match-p "https://example.com/oauth" text))))
+
+(ert-deftest test-opencode-render/form-block-text-answered ()
+  "Answered forms show the submitted values."
+  (let ((text (opencode-session--form-block-text
+               (opencode-render-test--form-state
+                'answered '((env . "prod")
+                            (count . 3)
+                            (dry-run . :json-false)
+                            (tags . ["a" "b"]))))))
+    (should (string-match-p "\[answered\]" text))
+    (should (string-match-p "Environment: prod" text))
+    (should (string-match-p "count: 3" text))
+    (should (string-match-p "dry-run: false" text))
+    (should (string-match-p "tags: a, b" text))
+    (should-not (string-match-p "Awaiting" text))))
+
+(ert-deftest test-opencode-render/form-block-text-cancelled ()
+  "Cancelled forms show a cancelled header only."
+  (let ((text (opencode-session--form-block-text
+               (opencode-render-test--form-state 'cancelled))))
+    (should (string-match-p "\[cancelled\]" text))
+    (should (string-match-p "Deploy" text))
+    (should-not (string-match-p "Awaiting" text))))
+
+(ert-deftest test-opencode-render/form-value-text ()
+  "Answer values render as readable strings."
+  (should (equal (opencode-session--form-value-text t) "true"))
+  (should (equal (opencode-session--form-value-text :json-false) "false"))
+  (should (equal (opencode-session--form-value-text '("a" "b")) "a, b"))
+  (should (equal (opencode-session--form-value-text ["a" "b"]) "a, b"))
+  (should (equal (opencode-session--form-value-text "x") "x"))
+  (should (equal (opencode-session--form-value-text 3) "3")))
+
+(ert-deftest test-opencode-render/form-render-and-clear-region ()
+  "render-forms inserts blocks above the input and clear-forms removes them."
+  (let ((buffer (generate-new-buffer " *oc-form-render*")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq-local opencode-session--forms nil)
+          (setq-local opencode-session--input-start-marker
+                      (copy-marker (point-min)))
+          (setq-local opencode-session--input-marker
+                      (copy-marker (point-max)))
+          (push (opencode-render-test--form-state 'pending)
+                opencode-session--forms)
+          (opencode-session--render-forms)
+          (should (string-match-p "Awaiting your answer" (buffer-string)))
+          (should (string-match-p "Deploy" (buffer-string)))
+          (let ((form-state (car opencode-session--forms)))
+            (should (markerp (opencode-session--form-state-start-marker
+                              form-state)))
+            (should (markerp (opencode-session--form-state-end-marker
+                              form-state))))
+          (opencode-session--clear-forms)
+          (should-not (string-match-p "Deploy" (buffer-string)))
+          (should-not (opencode-session--form-state-start-marker
+                       (car opencode-session--forms)))
+          (should-not (opencode-session--form-state-end-marker
+                       (car opencode-session--forms))))
+      (kill-buffer buffer))))
+
 (provide 'emacs-opencode-session-render-test)
 
 ;;; emacs-opencode-session-render-test.el ends here

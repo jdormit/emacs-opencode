@@ -52,6 +52,17 @@ Otherwise, set NAME to VALUE (converted with `format')."
                                (const :tag "Unset" nil))))
   :group 'emacs-opencode)
 
+(defcustom opencode-server-password nil
+  "Password used to authenticate with OpenCode server processes.
+
+OpenCode V2 requires HTTP Basic authentication for its API.  When nil, a
+random password is generated for each connection and passed to the server
+through the OPENCODE_PASSWORD environment variable.  When non-nil, this
+fixed password is used instead."
+  :type '(choice (const :tag "Generate randomly" nil)
+                 (string :tag "Password"))
+  :group 'emacs-opencode)
+
 (defun opencode-connection--process-environment (environment)
   "Return `process-environment' updated with ENVIRONMENT.
 
@@ -70,6 +81,34 @@ is non-nil, set NAME to VALUE (converted with `format')."
           (when value
             (push (format "%s=%s" name value) updated)))))
     updated))
+
+(defun opencode-connection--generate-password ()
+  "Return a random password for an OpenCode server process."
+  (secure-hash 'sha256 (format "%s-%s-%s"
+                               (float-time)
+                               (random)
+                               (emacs-pid))))
+
+(defun opencode-connection--resolve-password ()
+  "Return the password to use for a new server process.
+
+Prefer `opencode-server-password', then an OPENCODE_PASSWORD entry in
+`opencode-server-environment', and finally a freshly generated value."
+  (or opencode-server-password
+      (cdr (assoc "OPENCODE_PASSWORD" opencode-server-environment))
+      (opencode-connection--generate-password)))
+
+(defun opencode-connection--server-environment (connection)
+  "Return the process environment alist for CONNECTION's server.
+
+Starts from `opencode-server-environment' and adds the connection
+password as OPENCODE_PASSWORD unless the user already set it there."
+  (let ((password (opencode-connection-password connection)))
+    (if (and password
+             (not (assoc "OPENCODE_PASSWORD" opencode-server-environment)))
+        (cons (cons "OPENCODE_PASSWORD" password)
+              opencode-server-environment)
+      opencode-server-environment)))
 
 (defun opencode-connection--port-available-p (hostname port)
   "Return non-nil when PORT can be bound on HOSTNAME."
@@ -118,13 +157,15 @@ HOSTNAME and PORT override the default server config."
      :hostname resolved-host
      :port resolved-port
      :directory (file-name-as-directory (expand-file-name directory))
+     :username "opencode"
+     :password (opencode-connection--resolve-password)
      :timeout 10)))
 
 (defun opencode-connection--maybe-ready (process output connection ready-callback)
   "Process OUTPUT and call READY-CALLBACK when server is ready."
   (when (and ready-callback
              (not (process-get process 'opencode-ready)))
-    (when (string-match-p "opencode server listening on" output)
+    (when (string-match-p "server listening on" output)
       (process-put process 'opencode-ready t)
       (funcall ready-callback process)
       (opencode-connection-ensure-providers connection)
@@ -195,7 +236,8 @@ updated CONNECTION."
           (hostname (opencode-connection-hostname connection))
           (port (opencode-connection-port connection))
           (process-environment (opencode-connection--process-environment
-                                opencode-server-environment))
+                                (opencode-connection--server-environment
+                                 connection)))
           (command (list (executable-find opencode-server-command) "serve"
                          "--hostname" hostname
                          "--port" (number-to-string port)))

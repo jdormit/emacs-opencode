@@ -3,6 +3,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'emacs-opencode-session-vars)
+(require 'emacs-opencode-session)
 (require 'emacs-opencode-connection)
 (require 'emacs-opencode-client)
 (require 'emacs-opencode-sse)
@@ -13,6 +14,7 @@
 (declare-function opencode-session--maybe-start-spinner "emacs-opencode-session-header")
 (declare-function opencode-session--maybe-stop-spinner "emacs-opencode-session-header")
 (declare-function opencode-session--ensure-connection "emacs-opencode-session-mode" (callback))
+(declare-function opencode-session--selected-model "emacs-opencode-session-mode")
 
 (defcustom opencode-session-default-agent "plan"
   "Default agent name for new OpenCode sessions."
@@ -36,6 +38,31 @@ Most recently selected first.")
 
 (defvar-local opencode-session--variant-index nil
   "Index of the selected variant in the available variants list.")
+
+(defun opencode-session--push-agent (agent)
+  "Push AGENT as the active agent for the current session."
+  (when-let* ((connection opencode-session--connection)
+              (session opencode-session--session)
+              (session-id (opencode-session-id session))
+              (agent agent))
+    (opencode-client-session-set-agent
+     connection session-id agent
+     :success #'ignore
+     :error (lambda (&rest _args)
+              (message "OpenCode: failed to set agent")))))
+
+(defun opencode-session--push-model ()
+  "Push the active model and variant for the current session."
+  (when-let* ((connection opencode-session--connection)
+              (session opencode-session--session)
+              (session-id (opencode-session-id session))
+              (model (opencode-session--selected-model)))
+    (opencode-client-session-set-model
+     connection session-id model
+     :variant opencode-session--variant
+     :success #'ignore
+     :error (lambda (&rest _args)
+              (message "OpenCode: failed to set model")))))
 
 ;;; Agent management
 
@@ -114,6 +141,7 @@ Includes non-hidden agents that are not in primary mode (i.e., subagents)."
                (final-index (or index 0)))
           (setq-local opencode-session--agent agent)
           (setq-local opencode-session--agent-index final-index)
+          (opencode-session--push-agent agent)
           (opencode-session--render-header))))))
 
 (defun opencode-session--ensure-agents (connection)
@@ -145,6 +173,7 @@ These are non-hidden, non-primary agents (subagents)."
   "Set the current session agent to AGENT at INDEX."
   (setq-local opencode-session--agent agent)
   (setq-local opencode-session--agent-index index)
+  (opencode-session--push-agent agent)
   (opencode-session--render-header)
   (message "OpenCode agent: %s" agent))
 
@@ -393,6 +422,7 @@ Update recent models list, buffer state, and header."
   (setq-local opencode-session--provider-id provider-id)
   (setq-local opencode-session--model-id model-id)
   (opencode-session--sync-variant-selection)
+  (opencode-session--push-model)
   (opencode-session--render-header)
   (message "OpenCode model: %s/%s" provider-id model-id))
 
@@ -513,6 +543,7 @@ ON-SUCCESS is called when providers are loaded."
   "Set model VARIANT at INDEX for the current session buffer."
   (setq-local opencode-session--variant variant)
   (setq-local opencode-session--variant-index (and variant index))
+  (opencode-session--push-model)
   (opencode-session--render-header)
   (message "OpenCode variant: %s" (or variant "none")))
 

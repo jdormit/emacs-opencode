@@ -27,12 +27,12 @@
 ;;; session-from-data
 
 (ert-deftest test-opencode/session-from-data ()
-  "Create a session struct from an alist."
+  "Create a session struct from a V2 alist."
   (let* ((data '((id . "s1")
                  (slug . "my-session")
                  (version . 1)
                  (projectID . "p1")
-                 (directory . "/tmp")
+                 (location (directory . "/tmp"))
                  (title . "Test Session")
                  (time . ((created . "2024-01-01") (updated . "2024-01-02")))
                  (summary . "A summary")))
@@ -40,12 +40,19 @@
     (should (opencode-session-p session))
     (should (equal (opencode-session-id session) "s1"))
     (should (equal (opencode-session-slug session) "my-session"))
+    (should (equal (opencode-session-directory session) "/tmp"))
     (should (equal (opencode-session-title session) "Test Session"))
     (should (equal (opencode-session-time-created session) "2024-01-01"))
     (should (equal (opencode-session-time-updated session) "2024-01-02"))
     (should (equal (opencode-session-summary session) "A summary"))
     ;; info should be the original data
     (should (equal (opencode-session-info session) data))))
+
+(ert-deftest test-opencode/session-from-data-top-level-directory ()
+  "Fall back to a top-level DIRECTORY when LOCATION is absent."
+  (let ((session (opencode--session-from-data
+                  '((id . "s1") (directory . "/legacy")))))
+    (should (equal (opencode-session-directory session) "/legacy"))))
 
 ;;; session-label
 
@@ -121,7 +128,6 @@
   (let (candidates selected-session)
     (cl-letf (((symbol-function 'opencode-client-sessions)
                (lambda (_connection &rest args)
-                 (should (plist-get args :roots))
                  (funcall (plist-get args :success)
                           :data [((id . "parent") (title . "Parent"))
                                  ((id . "child") (title . "Child")

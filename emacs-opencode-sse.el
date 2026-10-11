@@ -118,7 +118,7 @@ Signals an error when DATA is not valid JSON."
 
 (defun opencode-sse--build-url (connection)
   "Build the SSE endpoint URL for CONNECTION."
-  (format "%s/event"
+  (format "%s/api/event"
           (string-remove-suffix "/" (opencode-connection-base-url connection))))
 
 (defun opencode-sse--auth-header (connection)

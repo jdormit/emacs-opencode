@@ -38,18 +38,18 @@
 ;;; build-url
 
 (ert-deftest test-opencode-sse/build-url ()
-  "Build the /event URL from a connection."
+  "Build the /api/event URL from a connection."
   (let ((conn (opencode-connection-create
                :base-url "http://localhost:4096")))
     (should (equal (opencode-sse--build-url conn)
-                   "http://localhost:4096/event"))))
+                   "http://localhost:4096/api/event"))))
 
 (ert-deftest test-opencode-sse/build-url-trailing-slash ()
-  "Strip trailing slash from base URL before appending /event."
+  "Strip trailing slash from base URL before appending /api/event."
   (let ((conn (opencode-connection-create
                :base-url "http://localhost:4096/")))
     (should (equal (opencode-sse--build-url conn)
-                   "http://localhost:4096/event"))))
+                   "http://localhost:4096/api/event"))))
 
 ;;; auth-header
 
@@ -749,7 +749,7 @@
         ;; URL arg.
         (should (member "--url" cmd))
         (should (equal (nth (1+ (cl-position "--url" cmd :test #'equal)) cmd)
-                       "http://localhost:4096/event"))
+                       "http://localhost:4096/api/event"))
         ;; Events arg.
         (should (member "--events" cmd))
         ;; Auth arg.

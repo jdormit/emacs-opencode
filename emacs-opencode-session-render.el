@@ -22,6 +22,7 @@ deleted on every status update.")
   "Marker for the end of the inline retry banner region.")
 
 (declare-function opencode--ensure-session-buffer "emacs-opencode")
+(declare-function opencode-session--message-part-from-info "emacs-opencode-session-mode")
 
 (defcustom opencode-session-show-reasoning nil
   "When non-nil, display reasoning/thinking blocks in the session buffer."
@@ -161,7 +162,8 @@ Closes the drawer for PART-ID if the request fails."
                   (when (buffer-live-p buffer)
                     (with-current-buffer buffer
                       (opencode-session--store-tool-outputs
-                       message (alist-get 'parts (plist-get args :data)))
+                       message (or (alist-get 'content (plist-get args :data))
+                                   (alist-get 'parts (plist-get args :data))))
                       (opencode-session--render-message message))))
        :error (lambda (&rest _args)
                 (when (buffer-live-p buffer)
@@ -172,11 +174,16 @@ Closes the drawer for PART-ID if the request fails."
 
 (defun opencode-session--store-tool-outputs (message parts)
   "Copy tool output from fetched PARTS into the matching parts of MESSAGE.
-Completed parts the server returns without output are stored as empty
-so their drawers stop showing the loading placeholder."
+PARTS is the `content' (or legacy `parts') array of a fetched V2
+message: tool items carry output in `state.content', which
+`opencode-session--message-part-from-info' maps to `state.output'.
+Completed parts the server returns without output are stored as
+empty so their drawers stop showing the loading placeholder."
   (dolist (raw (opencode-session--normalize-items parts))
     (let* ((state (alist-get 'state raw))
-           (output (alist-get 'output state))
+           (output (alist-get 'output
+                              (opencode-message-part-state
+                               (opencode-session--message-part-from-info raw))))
            (part (opencode-session--find-part message (alist-get 'id raw))))
       (when (and part
                  (equal (alist-get 'type raw) "tool")
@@ -432,10 +439,11 @@ Only includes string, number, and boolean values."
 (defun opencode-session--insert-message (message text face)
   "Insert MESSAGE with TEXT and FACE at the end of the log.
 
-Clears the retry banner before inserting so the new message lands
-above the banner, then re-renders the banner just above the input
+Clears the retry banner and form blocks before inserting so the new
+message lands above them, then re-renders both just above the input
 prompt."
   (opencode-session--clear-retry-banner)
+  (opencode-session--clear-forms)
   (let ((inhibit-read-only t))
     (save-excursion
       (goto-char (marker-position opencode-session--input-start-marker))
@@ -449,7 +457,8 @@ prompt."
         (set-marker opencode-session--input-marker (point-max))
         (opencode-session--ensure-input-prompt)
         (opencode-session--apply-message-properties start (point) face message))))
-  (opencode-session--render-retry-banner))
+  (opencode-session--render-retry-banner)
+  (opencode-session--render-forms))
 
 (defun opencode-session--retry-banner-text (status)
   "Return the banner text for retry STATUS, or nil.
@@ -566,6 +575,166 @@ properties and the user prefix indicator."
         (add-text-properties start prefix-end
                              `(line-prefix ,prefix wrap-prefix ,prefix))))))
 
+;;; Form blocks
+
+(defun opencode-session--form-fields (form)
+  "Return the field list of FORM."
+  (opencode-session--normalize-items (alist-get 'fields form)))
+
+(defun opencode-session--form-field-title (field)
+  "Return the display title of FIELD, falling back to its key."
+  (or (alist-get 'title field)
+      (alist-get 'key field)
+      "Field"))
+
+(defun opencode-session--form-field-hint (field)
+  "Return a short hint for FIELD, or nil."
+  (pcase (alist-get 'type field)
+    ("external" (alist-get 'url field))
+    ("string" (or (alist-get 'placeholder field)
+                  (let ((default (alist-get 'default field)))
+                    (and (stringp default)
+                         (not (string-empty-p default))
+                         (format "default %s" default)))))
+    ("boolean" (let ((default (alist-get 'default field)))
+                 (and default "default yes")))
+    (_ (let ((default (alist-get 'default field)))
+         (cond
+          ((numberp default) (format "default %s" default))
+          ((and (listp default) default)
+           (format "default %s"
+                   (mapconcat #'identity
+                              (opencode-session--normalize-items default) ", ")))
+          (t nil))))))
+
+(defun opencode-session--form-header (title status)
+  "Return the header line for form TITLE in STATUS."
+  (let ((face (if (string= status "cancelled")
+                  'opencode-session-error-face
+                'opencode-session-user-prefix-face)))
+    (propertize (format "── %s [%s]\n" title status)
+                'font-lock-face face)))
+
+(defun opencode-session--form-fields-text (form)
+  "Return the pending field lines for FORM."
+  (let ((lines
+         (delq nil
+               (mapcar
+                (lambda (field)
+                  (unless (eq (alist-get 'hidden field) t)
+                    (let ((required (eq (alist-get 'required field) t))
+                          (hint (opencode-session--form-field-hint field)))
+                      (concat "  " (opencode-session--form-field-title field)
+                              (when required " (required)")
+                              (when hint (format " — %s" hint))))))
+                (opencode-session--form-fields form)))))
+    (when lines
+      (concat (mapconcat #'identity lines "\n") "\n"))))
+
+(defun opencode-session--form-value-text (value)
+  "Return a display string for answer VALUE."
+  (cond
+   ((eq value t) "true")
+   ((eq value :json-false) "false")
+   ((vectorp value) (mapconcat #'identity (append value nil) ", "))
+   ((listp value) (mapconcat #'identity value ", "))
+   ((stringp value) value)
+   ((numberp value) (format "%s" value))
+   (t "")))
+
+(defun opencode-session--form-answers-text (form form-state)
+  "Return the answer lines for answered FORM-STATE."
+  (let* ((answers (opencode-session--form-state-answers form-state))
+         (fields (opencode-session--form-fields form))
+         (lines
+          (delq nil
+                (mapcar
+                 (lambda (pair)
+                   (let* ((key (car pair))
+                          (value (cdr pair))
+                          (field (cl-find-if
+                                  (lambda (candidate)
+                                    (string= key (alist-get 'key candidate)))
+                                  fields)))
+                     (format "  %s: %s"
+                             (if field
+                                 (opencode-session--form-field-title field)
+                               key)
+                             (opencode-session--form-value-text value))))
+                 answers))))
+    (when lines
+      (concat (mapconcat #'identity lines "\n") "\n"))))
+
+(defun opencode-session--form-block-text (form-state)
+  "Return the rendered text for FORM-STATE."
+  (let* ((form (opencode-session--form-state-form form-state))
+         (title (or (alist-get 'title form) "Form"))
+         (status (opencode-session--form-state-status form-state)))
+    (pcase status
+      ('pending
+       (concat
+        (opencode-session--form-header title "awaiting")
+        (opencode-session--form-fields-text form)
+        (propertize "  ⏳ Awaiting your answer\n"
+                    'font-lock-face 'font-lock-warning-face)))
+      ('answered
+       (concat
+        (opencode-session--form-header title "answered")
+        (opencode-session--form-answers-text form form-state)))
+      ('cancelled
+       (opencode-session--form-header title "cancelled"))
+      (_ ""))))
+
+(defun opencode-session--clear-forms ()
+  "Delete the rendered form blocks, if any."
+  (let ((inhibit-read-only t))
+    (dolist (form-state opencode-session--forms)
+      (let ((start (opencode-session--form-state-start-marker form-state))
+            (end (opencode-session--form-state-end-marker form-state)))
+        (when (and (markerp start) (markerp end))
+          (let ((start-pos (marker-position start))
+                (end-pos (marker-position end)))
+            (when (and start-pos end-pos (< start-pos end-pos))
+              (delete-region start-pos end-pos))))
+        (when (markerp start)
+          (set-marker start nil))
+        (when (markerp end)
+          (set-marker end nil))
+        (setf (opencode-session--form-state-start-marker form-state) nil)
+        (setf (opencode-session--form-state-end-marker form-state) nil)))))
+
+(defun opencode-session--render-forms ()
+  "Render all form blocks above the input prompt.
+
+Clears any existing blocks first, then inserts one compact block per
+`opencode-session--form-state' in list order at the current input
+boundary, pushing the boundary past the blocks so they sit directly
+above the input prompt (below the retry banner).  Does nothing when
+the buffer has no input region or no forms."
+  (when (and (markerp opencode-session--input-start-marker)
+             opencode-session--forms)
+    (opencode-session--clear-forms)
+    (let ((inhibit-read-only t))
+      (save-excursion
+        (goto-char (marker-position opencode-session--input-start-marker))
+        (dolist (form-state opencode-session--forms)
+          (let ((start (point)))
+            (insert (propertize (opencode-session--form-block-text form-state)
+                                'read-only t
+                                'front-sticky t
+                                'rear-nonsticky t))
+            (insert (propertize "\n" 'read-only t
+                                'front-sticky t 'rear-nonsticky t))
+            (let ((end (point)))
+              (setf (opencode-session--form-state-start-marker form-state)
+                    (copy-marker start))
+              (setf (opencode-session--form-state-end-marker form-state)
+                    (copy-marker end)))))
+        (set-marker opencode-session--input-start-marker (point))
+        (when (markerp opencode-session--input-marker)
+          (set-marker opencode-session--input-marker (point-max)))
+        (opencode-session--ensure-input-prompt)))))
+
 (defun opencode-session--message-text (message)
   "Return the renderable text for MESSAGE."
   (let* ((parts (opencode-message-parts message))
@@ -580,14 +749,19 @@ properties and the user prefix indicator."
       base)))
 
 (defun opencode-session--message-error-text (message)
-  "Return a formatted assistant error string for MESSAGE, or nil."
+  "Return a formatted assistant error string for MESSAGE, or nil.
+Handles both the V1 `(name data.(message))' and V2
+`(type message status)' error shapes."
   (when (and (string= (opencode-message-role message) "assistant")
              (consp (opencode-message-error message)))
     (let* ((error-info (opencode-message-error message))
-           (name (alist-get 'name error-info))
+           (name (or (alist-get 'name error-info) (alist-get 'type error-info)))
            (data (alist-get 'data error-info))
-           (detail (and (listp data)
-                        (opencode-session--nonempty-string (alist-get 'message data)))))
+           (detail (or (and (listp data)
+                            (opencode-session--nonempty-string (alist-get 'message data)))
+                       (opencode-session--nonempty-string (alist-get 'message error-info))
+                       (and (stringp name)
+                            (opencode-session--nonempty-string name)))))
       (unless (string= name "MessageAbortedError")
         (propertize (format "Error: %s" (or detail "An error occurred"))
                     'opencode-part-type "assistant-text"

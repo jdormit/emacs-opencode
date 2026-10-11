@@ -50,6 +50,59 @@
       ;; Should be a copy, not the same object
       (should-not (eq result process-environment)))))
 
+;;; password and server environment
+
+(ert-deftest test-opencode-connection/generate-password ()
+  "Generated passwords are non-empty, distinct sha256 hashes."
+  (let ((passwords (cl-loop repeat 5 collect
+                            (opencode-connection--generate-password))))
+    (dolist (password passwords)
+      (should (stringp password))
+      (should (= (length password) 64)))
+    (should (= (length (delete-dups (copy-sequence passwords))) 5))))
+
+(ert-deftest test-opencode-connection/resolve-password-prefers-custom ()
+  "`opencode-server-password' wins over the server environment."
+  (let ((opencode-server-password "custom-pw")
+        (opencode-server-environment '(("OPENCODE_PASSWORD" . "env-pw"))))
+    (should (equal (opencode-connection--resolve-password) "custom-pw"))))
+
+(ert-deftest test-opencode-connection/resolve-password-uses-environment ()
+  "An OPENCODE_PASSWORD in the server environment is reused."
+  (let ((opencode-server-password nil)
+        (opencode-server-environment '(("OPENCODE_PASSWORD" . "env-pw"))))
+    (should (equal (opencode-connection--resolve-password) "env-pw"))))
+
+(ert-deftest test-opencode-connection/resolve-password-generates-fallback ()
+  "A password is generated when nothing is configured."
+  (let ((opencode-server-password nil)
+        (opencode-server-environment nil))
+    (let ((password (opencode-connection--resolve-password)))
+      (should (stringp password))
+      (should (= (length password) 64)))))
+
+(ert-deftest test-opencode-connection/server-environment-injects-password ()
+  "The connection password is exported as OPENCODE_PASSWORD."
+  (let ((opencode-server-environment '(("FOO" . "bar"))))
+    (should (equal (opencode-connection--server-environment
+                    (opencode-connection-create :password "conn-pw"))
+                   '(("OPENCODE_PASSWORD" . "conn-pw")
+                     ("FOO" . "bar"))))))
+
+(ert-deftest test-opencode-connection/server-environment-keeps-existing ()
+  "A user-supplied OPENCODE_PASSWORD is not overridden."
+  (let ((opencode-server-environment '(("OPENCODE_PASSWORD" . "user-pw"))))
+    (should (equal (opencode-connection--server-environment
+                    (opencode-connection-create :password "conn-pw"))
+                   '(("OPENCODE_PASSWORD" . "user-pw"))))))
+
+(ert-deftest test-opencode-connection/server-environment-without-password ()
+  "No OPENCODE_PASSWORD is added when the connection has no password."
+  (let ((opencode-server-environment '(("FOO" . "bar"))))
+    (should (equal (opencode-connection--server-environment
+                    (opencode-connection-create))
+                   '(("FOO" . "bar"))))))
+
 ;;; connection struct
 
 (ert-deftest test-opencode-connection/create-struct ()
@@ -64,6 +117,15 @@
     (should (equal (opencode-connection-hostname conn) "localhost"))
     (should (= (opencode-connection-port conn) 4096))
     (should (equal (opencode-connection-directory conn) "/tmp/"))))
+
+(ert-deftest test-opencode-connection/create-for-directory-basic-auth ()
+  "New connections use the opencode user and the resolved password."
+  (let ((opencode-server-password "fixed-pw"))
+    (let ((conn (opencode-connection-create-for-directory
+                 "/tmp/project" "127.0.0.1" 4096)))
+      (should (equal (opencode-connection-username conn) "opencode"))
+      (should (equal (opencode-connection-password conn) "fixed-pw"))
+      (should (equal (opencode-connection-directory conn) "/tmp/project/")))))
 
 ;;; alive-p
 
@@ -88,7 +150,7 @@
                      (lambda (&rest _) nil)))
             (opencode-connection--maybe-ready
              fake-process
-             "some output opencode server listening on :4096"
+             "server listening on http://127.0.0.1:4096"
              conn
              (lambda (_proc) (setq called t))))
           (should called))
