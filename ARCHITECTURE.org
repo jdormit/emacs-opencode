@@ -46,7 +46,7 @@ the server-backed session lifecycle.
 - Connection lifecycle owns server process startup, port selection, readiness,
   health checks, environment variables, shutdown, and connection-scoped caches.
 - HTTP client wrappers centralize request construction, JSON encoding, parsing,
-  auth, timeouts, and directory routing headers.
+  auth, timeouts, and `location[directory]` scoping.
 - Streaming transport owns the SSE subprocess, event filtering, parsing, and
   dispatch into registered event handlers.
 - Session domain models normalize server payloads into small Emacs Lisp structs
@@ -97,7 +97,7 @@ event registry and avoid parsing or retaining events that have no registered
 handler.
 
 Handlers receive the originating connection as metadata. That matters when more
-than one OpenCode server is running: permission replies, question replies, and
+than one OpenCode server is running: permission replies, form replies, and
 subagent updates must be routed back to the server that produced the event, not
 to an arbitrary live buffer.
 

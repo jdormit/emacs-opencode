@@ -284,63 +284,84 @@ model reference when provided."
    :success success
    :error error))
 
-(cl-defmethod opencode-client-instance-dispose ((conn opencode-connection) &key success error)
-  "Dispose the current OpenCode instance for CONN."
+(cl-defmethod opencode-client-models ((conn opencode-connection) &key success error)
+  "Fetch the available models from the server."
+  (opencode-request
+   conn
+   'GET
+   "/api/model"
+   :params (opencode-client--location-params conn)
+   :success success
+   :error error))
+
+(cl-defmethod opencode-client-integrations ((conn opencode-connection) &key success error)
+  "Fetch available integrations from the server.
+
+Integrations describe how a provider is authenticated, including its
+methods and any established connections."
+  (opencode-request
+   conn
+   'GET
+   "/api/integration"
+   :params (opencode-client--location-params conn)
+   :success success
+   :error error))
+
+(cl-defmethod opencode-client-integration-connect-key
+  ((conn opencode-connection) integration-id key &key label success error)
+  "Connect INTEGRATION-ID on CONN using an API KEY.
+
+LABEL optionally names the stored credential."
   (opencode-request
    conn
    'POST
-   "/instance/dispose"
+   (format "/api/integration/%s/connect/key" integration-id)
+   :json `((key . ,key)
+           ,@(when label `((label . ,label))))
    :parser (lambda () nil)
    :success success
    :error error))
 
-(cl-defmethod opencode-client-provider-auth-methods ((conn opencode-connection) &key success error)
-  "Fetch available auth methods for all providers."
-  (opencode-request
-   conn
-   'GET
-   "/provider/auth"
-   :success success
-   :error error))
+(cl-defmethod opencode-client-integration-connect-oauth
+  ((conn opencode-connection) integration-id method-id &key inputs label success error)
+  "Start an OAuth flow for INTEGRATION-ID on CONN using METHOD-ID.
 
-(cl-defmethod opencode-client-provider-oauth-authorize
-  ((conn opencode-connection) provider-id method-index &key success error)
-  "Start OAuth authorization for PROVIDER-ID using METHOD-INDEX."
+INPUTS is an optional alist of method input values.  LABEL optionally
+names the stored credential.  The success callback receives an attempt
+alist with `attemptID', `url', `instructions' and `mode'."
   (opencode-request
    conn
    'POST
-   (format "/provider/%s/oauth/authorize" provider-id)
-   :json `((method . ,method-index))
+   (format "/api/integration/%s/connect/oauth" integration-id)
+   :json `((methodID . ,method-id)
+           ,@(when inputs `((inputs . ,inputs)))
+           ,@(when label `((label . ,label))))
    :success success
    :error error))
 
-(cl-defmethod opencode-client-provider-oauth-callback
-  ((conn opencode-connection) provider-id method-index &key code success error)
-  "Complete OAuth callback for PROVIDER-ID using METHOD-INDEX.
+(cl-defmethod opencode-client-integration-attempt-status
+  ((conn opencode-connection) attempt-id &key success error)
+  "Fetch the status of OAuth ATTEMPT-ID on CONN.
 
-CODE is the authorization code for the \"code\" flow."
-  (let ((payload `((method . ,method-index))))
-    (when code
-      (setq payload (append payload `((code . ,code)))))
-    (opencode-request
-     conn
-     'POST
-     (format "/provider/%s/oauth/callback" provider-id)
-     :json payload
-     :timeout nil
-     :success success
-     :error error)))
-
-(cl-defmethod opencode-client-auth-set
-  ((conn opencode-connection) provider-id auth-info &key success error)
-  "Set auth credentials for PROVIDER-ID.
-
-AUTH-INFO is an alist representing the auth payload."
+The success callback receives a status alist with a `status' key whose
+value is one of \"pending\", \"complete\", \"failed\" or \"expired\"."
   (opencode-request
    conn
-   'PUT
-   (format "/auth/%s" provider-id)
-   :json auth-info
+   'GET
+   (format "/api/integration/attempt/%s" attempt-id)
+   :params (opencode-client--location-params conn)
+   :success success
+   :error error))
+
+(cl-defmethod opencode-client-integration-attempt-complete
+  ((conn opencode-connection) attempt-id &key code success error)
+  "Complete OAuth ATTEMPT-ID on CONN, optionally supplying CODE."
+  (opencode-request
+   conn
+   'POST
+   (format "/api/integration/attempt/%s/complete" attempt-id)
+   :json (when code `((code . ,code)))
+   :parser (lambda () nil)
    :success success
    :error error))
 

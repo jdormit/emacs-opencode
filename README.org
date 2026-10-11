@@ -56,8 +56,8 @@ They support:
 - Streaming responses and tool output.
 - Agent, model/provider, and variant selection from the header-line controls.
 - Slash commands: type =/command args= or run =C-c C-o=.
-- Shell prompts: type =!command= to send shell output through OpenCode's shell
-  prompt endpoint.
+- Shell prompts: type =!command= to send shell output through the session's
+  shell endpoint.
 - Subagent mentions: type =@agent= and complete with =C-<tab>=.
 - Tool output drawers: each completed tool call ends with a =▸= indicator.
   Press =TAB= or click the tool line to open the drawer and show the full
@@ -76,7 +76,7 @@ They support:
   session starts before that message; when point is on an assistant message, it
   starts before the user message that prompted that response. When point is in
   the input area, the whole session is forked.
-- Inline handling for OpenCode permission requests and questions via the
+- Inline handling for OpenCode permission requests and forms via the
   minibuffer.
 
 Context commands include the active region when one is selected; otherwise they

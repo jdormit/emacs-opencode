@@ -164,6 +164,39 @@
   (let ((status (opencode-status-create :type "retry")))
     (should (null (opencode-session--header-retry-segment status)))))
 
+;;; model-context-limit
+
+(ert-deftest test-opencode-header/model-context-limit ()
+  "Read the context limit from the flat V2 model list."
+  (with-temp-buffer
+    (setq-local opencode-session--connection
+                (opencode-connection-create
+                 :models '(((id . "gpt-6") (modelID . "gpt-6")
+                            (providerID . "openai")
+                            (limit . ((context . 200000)
+                                      (input . 100000)
+                                      (output . 100000)))))))
+    (should (equal (opencode-session--model-context-limit "openai" "gpt-6")
+                   200000))))
+
+(ert-deftest test-opencode-header/model-context-limit-by-model-id ()
+  "Match the model by modelID when the catalog id differs."
+  (with-temp-buffer
+    (setq-local opencode-session--connection
+                (opencode-connection-create
+                 :models '(((id . "gpt-6-fast") (modelID . "gpt-6")
+                            (providerID . "openai")
+                            (limit . ((context . 128000)))))))
+    (should (equal (opencode-session--model-context-limit "openai" "gpt-6")
+                   128000))))
+
+(ert-deftest test-opencode-header/model-context-limit-missing ()
+  "Return nil when the model is unknown."
+  (with-temp-buffer
+    (setq-local opencode-session--connection
+                (opencode-connection-create :models nil))
+    (should (null (opencode-session--model-context-limit "openai" "nope")))))
+
 (provide 'emacs-opencode-session-header-test)
 
 ;;; emacs-opencode-session-header-test.el ends here

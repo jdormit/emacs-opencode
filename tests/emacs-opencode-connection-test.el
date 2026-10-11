@@ -173,6 +173,50 @@
       (when (process-live-p fake-process)
         (delete-process fake-process)))))
 
+;;; ensure-providers/models/integrations
+
+(ert-deftest test-opencode-connection/ensure-providers-v2-shape ()
+  "Store the bare V2 provider list without a catalog envelope."
+  (let ((conn (opencode-connection-create))
+        (items '(((id . "openai") (integrationID . "openai") (name . "OpenAI")))))
+    (cl-letf (((symbol-function 'opencode-client-providers)
+               (lambda (_conn &rest args)
+                 (funcall (plist-get args :success) :data items))))
+      (let (captured)
+        (opencode-connection-ensure-providers
+         conn (lambda (result) (setq captured result)))
+        (should (equal captured items))
+        (should (equal (opencode-connection-providers conn) items))))))
+
+(ert-deftest test-opencode-connection/ensure-models ()
+  "Fetch and cache models."
+  (let ((conn (opencode-connection-create))
+        (items '(((id . "gpt-6") (providerID . "openai")))))
+    (cl-letf (((symbol-function 'opencode-client-models)
+               (lambda (_conn &rest args)
+                 (funcall (plist-get args :success) :data items))))
+      (opencode-connection-ensure-models conn)
+      (should (equal (opencode-connection-models conn) items)))))
+
+(ert-deftest test-opencode-connection/ensure-models-cached ()
+  "Return cached models without refetching."
+  (let ((conn (opencode-connection-create :models '(((id . "cached"))))))
+    (let ((called nil))
+      (cl-letf (((symbol-function 'opencode-client-models)
+                 (lambda (&rest _args) (setq called t))))
+        (opencode-connection-ensure-models conn)
+        (should-not called)))))
+
+(ert-deftest test-opencode-connection/ensure-integrations ()
+  "Fetch and cache integrations."
+  (let ((conn (opencode-connection-create))
+        (items '(((id . "openai") (connections . [])))))
+    (cl-letf (((symbol-function 'opencode-client-integrations)
+               (lambda (_conn &rest args)
+                 (funcall (plist-get args :success) :data items))))
+      (opencode-connection-ensure-integrations conn)
+      (should (equal (opencode-connection-integrations conn) items)))))
+
 (provide 'emacs-opencode-connection-test)
 
 ;;; emacs-opencode-connection-test.el ends here

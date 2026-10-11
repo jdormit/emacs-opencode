@@ -92,6 +92,95 @@ last `request' call made during BODY."
       (should (equal (plist-get args :params)
                      '(("location[directory]" . "/tmp/project")))))))
 
+;;; models and integrations
+
+(ert-deftest test-opencode-client/models-send-location-params ()
+  "Model listing scopes with location[directory]."
+  (let ((conn (opencode-client-test--connection "/tmp/project/")))
+    (opencode-client-test--with-captured-request url args
+      (opencode-client-models conn :success #'ignore :error #'ignore)
+      (should (equal url "http://127.0.0.1:4096/api/model"))
+      (should (equal (plist-get args :type) "GET"))
+      (should (equal (plist-get args :params)
+                     '(("location[directory]" . "/tmp/project")))))))
+
+(ert-deftest test-opencode-client/integrations-send-location-params ()
+  "Integration listing scopes with location[directory]."
+  (let ((conn (opencode-client-test--connection "/tmp/project/")))
+    (opencode-client-test--with-captured-request url args
+      (opencode-client-integrations conn :success #'ignore :error #'ignore)
+      (should (equal url "http://127.0.0.1:4096/api/integration"))
+      (should (equal (plist-get args :type) "GET"))
+      (should (equal (plist-get args :params)
+                     '(("location[directory]" . "/tmp/project")))))))
+
+(ert-deftest test-opencode-client/integration-connect-key ()
+  "Connecting with a key posts the key to the integration."
+  (let ((conn (opencode-client-test--connection "/tmp/project/")))
+    (opencode-client-test--with-captured-request url args
+      (opencode-client-integration-connect-key
+       conn "openai" "sk-secret" :success #'ignore :error #'ignore)
+      (should (equal url
+                     "http://127.0.0.1:4096/api/integration/openai/connect/key"))
+      (should (equal (plist-get args :type) "POST"))
+      (should (equal (plist-get args :data)
+                     (json-encode '((key . "sk-secret"))))))))
+
+(ert-deftest test-opencode-client/integration-connect-key-label ()
+  "A label is included when provided."
+  (let ((conn (opencode-client-test--connection "/tmp/project/")))
+    (opencode-client-test--with-captured-request _url args
+      (opencode-client-integration-connect-key
+       conn "openai" "sk-secret" :label "Work"
+       :success #'ignore :error #'ignore)
+      (should (equal (plist-get args :data)
+                     (json-encode '((key . "sk-secret")
+                                    (label . "Work"))))))))
+
+(ert-deftest test-opencode-client/integration-connect-oauth ()
+  "Starting OAuth posts the method id."
+  (let ((conn (opencode-client-test--connection "/tmp/project/")))
+    (opencode-client-test--with-captured-request url args
+      (opencode-client-integration-connect-oauth
+       conn "opencode" "chatgpt-browser" :success #'ignore :error #'ignore)
+      (should (equal url
+                     "http://127.0.0.1:4096/api/integration/opencode/connect/oauth"))
+      (should (equal (plist-get args :type) "POST"))
+      (should (equal (plist-get args :data)
+                     (json-encode '((methodID . "chatgpt-browser"))))))))
+
+(ert-deftest test-opencode-client/integration-attempt-status ()
+  "Attempt status is fetched by attempt id."
+  (let ((conn (opencode-client-test--connection "/tmp/project/")))
+    (opencode-client-test--with-captured-request url args
+      (opencode-client-integration-attempt-status
+       conn "att_1" :success #'ignore :error #'ignore)
+      (should (equal url
+                     "http://127.0.0.1:4096/api/integration/attempt/att_1"))
+      (should (equal (plist-get args :type) "GET"))
+      (should (equal (plist-get args :params)
+                     '(("location[directory]" . "/tmp/project")))))))
+
+(ert-deftest test-opencode-client/integration-attempt-complete ()
+  "Completing an attempt posts the code."
+  (let ((conn (opencode-client-test--connection "/tmp/project/")))
+    (opencode-client-test--with-captured-request url args
+      (opencode-client-integration-attempt-complete
+       conn "att_1" :code "123456" :success #'ignore :error #'ignore)
+      (should (equal url
+                     "http://127.0.0.1:4096/api/integration/attempt/att_1/complete"))
+      (should (equal (plist-get args :type) "POST"))
+      (should (equal (plist-get args :data)
+                     (json-encode '((code . "123456"))))))))
+
+(ert-deftest test-opencode-client/integration-attempt-complete-no-code ()
+  "Completing without a code sends no body."
+  (let ((conn (opencode-client-test--connection "/tmp/project/")))
+    (opencode-client-test--with-captured-request _url args
+      (opencode-client-integration-attempt-complete
+       conn "att_1" :success #'ignore :error #'ignore)
+      (should (null (plist-get args :data))))))
+
 (ert-deftest test-opencode-client/json-read-data-unwraps-envelope ()
   "A top-level data envelope is unwrapped."
   (with-temp-buffer

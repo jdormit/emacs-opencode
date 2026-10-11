@@ -1,8 +1,9 @@
 # OpenCode V2 Migration — Remaining Phases
 
 Status of the native V2 migration of this package (targets OpenCode V2 only;
-V1 and V2 are not installed side-by-side). The core migration is done and
-staged; the provider/model catalog, auth, and final tests/docs cleanup remain.
+V1 and V2 are not installed side-by-side). The core migration, including the
+provider/model catalog and auth, is done and staged; only final tests/docs
+cleanup remains.
 
 ## Completed
 
@@ -35,35 +36,40 @@ staged; the provider/model catalog, auth, and final tests/docs cleanup remain.
   handling, `{answer:{}}` empty-reply encoding, case-sensitive pattern
   matching, string-key answer lookups). Full ERT suite green (521 tests),
   byte-compile clean apart from pre-existing warnings, no new checkdoc warnings.
+- **Phase 7 — Provider/model catalog + auth.** Providers, models and
+  integrations are now three independent caches:
+  - `opencode-connection-ensure-providers` stores the bare V2 list (no
+    `(alist-get 'all data)`), and new `ensure-models` / `ensure-integrations`
+    mirror it. The connection struct swaps `provider-catalog` for `models` +
+    `integrations`.
+  - The session completion UI reads the flat `/api/model` list
+    (`opencode-session--provider-model-candidates` / `--provider-model-info`),
+    keying candidates on the catalog `id` (the session's `ModelRef.id`), and
+    skips `status: "deprecated"` entries. `--variant-keys` understands both V2
+    variant objects (`{id, settings}`) and the legacy pair shape.
+  - Connected state derives from integration `connections`;
+    `--integration-id-for-provider` maps a provider to its `integrationID`.
+  - Auth dispatch is on the V2 method `type` (`key` / `oauth` / `env`):
+    `/api/integration/{id}/connect/key` for keys,
+    `/api/integration/{id}/connect/oauth` for OAuth (browse URL + poll
+    `/api/integration/attempt/{attemptID}` via `run-at-time`, or prompt for the
+    code and POST `.../complete`). The V1 `/provider/auth`,
+    `/provider/{id}/oauth/*`, and `PUT /auth/{id}` paths are gone.
+  - `/instance/dispose` dropped — V2 has no equivalent; post-auth just restarts
+    SSE and refreshes the caches.
+  - The `declare-function` `&key` arg-count warnings in
+    `emacs-opencode-connection.el` are fixed by declaring `(conn &rest args)`.
+  - Full ERT suite green (550 tests), byte-compile unchanged apart from the two
+    pre-existing warnings, no new checkdoc warnings.
 
 ## Remaining
 
-### Phase 7 — Provider/model catalog + auth
-
-- **Provider response shape.** `opencode-connection-ensure-providers` still
-  reads the V1 `(alist-get 'all data)` shape; V2 returns `{data: […], location}`
-  (bare list after unwrapping). Repoint the cache at the V2 shape.
-  The pre-existing compile warnings (`opencode-client-commands` /
-  `opencode-client-providers` "called with 5 arguments, but accepts only 4" in
-  `emacs-opencode-connection.el`) are `cl-defmethod` `&key` arg-count
-  mismatches at these call sites; worth revisiting while touching the cache.
-- **Model catalog.** `/api/model` (models shape with `id`, `providerID`,
-  `variant`); provider-level model lists if `/api/provider` embeds them.
-  Session model selection already round-trips server-side from Phase 3; only the
-  catalog/source that feeds the completion UI needs the V2 shape.
-- **Auth via credentials/integrations.** Replace the remaining V1 endpoints:
-  - `/provider/auth` → auth methods via `/api/credential` + `/api/integration`.
-  - `/provider/{id}/oauth/authorize` and `/provider/{id}/oauth/callback` →
-    integration/credential equivalents.
-  - `/auth/{id}` (PUT auth-set) → credential creation.
-- **`/instance/dispose`** — no public V2 equivalent confirmed; either drop the
-  command or wire it to whatever the V2 server offers for instance teardown.
-
 ### Phase 8 — Tests & docs
 
-- **Tests.** Any remaining ERT assertions still encoding V1 response shapes
-  (provider `all`/`default`/`connected`, question payloads, V1 message
-  envelopes); add coverage for the Phase 7 provider/model catalog shape.
+- **Tests.** Phase 7 added coverage for the new client endpoints, the
+  connection caches, the V2 model/candidate/integration shapes, and the auth
+  helpers. Any *remaining* ERT assertions still encoding V1 response shapes
+  (question payloads, V1 message envelopes) should be audited.
 - **Docs.** Audit `README.org` and `ARCHITECTURE.org` for anything still worded
   around V1 concepts (e.g., the "shell prompt endpoint" phrasing, session
   hydration/streaming model descriptions, the `TODO.org` roadmap) and align
