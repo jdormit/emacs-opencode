@@ -1,10 +1,10 @@
-# OpenCode V2 Migration — Remaining Phases
+# OpenCode V2 Migration — Notes on what has been done
 
 Status of the native V2 migration of this package (targets OpenCode V2 only;
 V1 and V2 are not installed side-by-side). The migration is complete through
 Phase 8; all phases are listed under Completed below.
 
-## Completed
+## Steps and things that changed
 
 - **Phase 1 — Connect, authenticate, stream URL.** Password auth
   (`OPENCODE_PASSWORD` + generated/configured `opencode-server-password`),
