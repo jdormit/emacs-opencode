@@ -99,8 +99,7 @@ Return its new state, or nil when it is already registered."
   "Return the prompt request ID from resolved-event DATA, if any."
   (or (alist-get 'requestID data)
       (alist-get 'requestId data)
-      (alist-get 'id data)
-      (alist-get 'requestID (alist-get 'properties data))))
+      (alist-get 'id data)))
 
 (defun opencode-session--handle-prompt-resolved (data meta)
   "Handle a prompt completion SSE DATA arriving with META."
@@ -1175,16 +1174,13 @@ Returns nil when PATH is not a string."
 (opencode-sse-define-handler file-watcher-updated "file.watcher.updated" (_event data _meta)
   (opencode-session--handle-file-updated data))
 
-;; TODO: handle additional bus events that the server publishes via
-;; `Bus.subscribeAll' on the /event SSE stream:
-;;   - `tui.toast.show'  — used by MCP auth flow and any external POST
-;;     /tui/toast caller; would be nice to surface in the echo area
+;; TODO: surface additional bus events the server publishes on the
+;; `/api/event' SSE stream:
+;;   - `tui.toast.show' — used by the MCP auth flow and external
+;;     `/tui/toast' callers; would be nice to show in the echo area
 ;;     with a face based on the variant (info/success/warning/error).
-;;   - `installation.update-available' — server announcing a new
-;;     opencode release; currently the TUI shows a confirm dialog and
-;;     runs the upgrade.
-;;   - `form.asked'/`form.replied' — V2's replacement for V1 questions;
-;;     deferred to the form-based interaction phase.
+;;   - `installation.updated' — server announcing a new opencode
+;;     release; the TUI shows a confirm dialog and runs the upgrade.
 
 (provide 'emacs-opencode-session-handlers)
 

@@ -9,7 +9,7 @@ The OpenCode server forwards bus events over the SSE stream, including
 We currently ignore them.  Surface in the echo area at minimum, with
 a face based on the variant (info/success/warning/error).
 
-* TODO Handle =installation.update-available= events
+* TODO Handle =installation.updated= events
 The TUI prompts the user via a confirm dialog and runs an upgrade.
 At minimum we should =message= the user; eventually a customizable
 hook so users can wire it to whatever update flow they prefer.

@@ -69,19 +69,16 @@
 ;;; message-from-info
 
 (ert-deftest test-opencode-session-mode/message-from-info ()
-  "Create a message from an info alist."
+  "Create a message from a V2 info alist."
   (let ((msg (opencode-session--message-from-info
-              '((id . "m1")
+              '((id . "msg_1")
                 (sessionID . "s1")
-                (role . "assistant")
-                (providerID . "anthropic")
-                (modelID . "claude-3")
-                (time . ((created . "2024-01-01")))))))
+                (type . "user")
+                (time . ((created . 1700000000000)))))))
     (should (opencode-message-p msg))
-    (should (equal (opencode-message-id msg) "m1"))
-    (should (equal (opencode-message-role msg) "assistant"))
-    (should (equal (opencode-message-provider-id msg) "anthropic"))
-    (should (equal (opencode-message-model-id msg) "claude-3"))))
+    (should (equal (opencode-message-id msg) "msg_1"))
+    (should (equal (opencode-message-role msg) "user"))
+    (should (equal (opencode-message-time-created msg) 1700000000000))))
 
 (ert-deftest test-opencode-session-mode/message-from-info-nil ()
   "Return nil for nil info."
@@ -119,13 +116,16 @@
                  (type . "text")
                  (text . "hello")
                  (tool . "bash")
-                 (time . ((start . "2024-01-01") (end . "2024-01-02")))))))
+                 (time . ((created . 1700000000000)
+                          (ran . 1700000000500)
+                          (completed . 1700000001000)))))))
     (should (opencode-message-part-p part))
     (should (equal (opencode-message-part-id part) "p1"))
     (should (equal (opencode-message-part-type part) "text"))
     (should (equal (opencode-message-part-text part) "hello"))
     (should (equal (opencode-message-part-tool part) "bash"))
-    (should (equal (opencode-message-part-time-start part) "2024-01-01"))))
+    (should (equal (opencode-message-part-time-start part) 1700000000000))
+    (should (equal (opencode-message-part-time-end part) 1700000001000))))
 
 (ert-deftest test-opencode-session-mode/message-part-from-info-v2-tool ()
   "Map a V2 tool part: name as tool, state.content as output."
@@ -202,18 +202,6 @@
   "Filter out non-list items (delq removes nils)."
   (should (equal (opencode-session--command-names '("not-an-alist" ((name . "ok"))))
                  '("ok"))))
-
-;;; hydrate-parts
-
-(ert-deftest test-opencode-session-mode/hydrate-parts ()
-  "Hydrate raw parts into an alist of part structs."
-  (let ((result (opencode-session--hydrate-parts
-                 '(((id . "p1") (type . "text") (text . "hello"))
-                   ((id . "p2") (type . "tool") (tool . "bash"))))))
-    (should (= (length result) 2))
-    (should (equal (car (car result)) "p1"))
-    (should (opencode-message-part-p (cdr (car result))))
-    (should (equal (opencode-message-part-type (cdr (car result))) "text"))))
 
 ;;; hydrate-content (V2)
 
@@ -319,24 +307,6 @@
              (time . ((created . 4000)))))
           (should (equal (opencode-message-text (car opencode-session--messages))
                          "$ ls -la\na.el\nb.el\n")))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest test-opencode-session-mode/hydrate-message-v1-shape ()
-  "Legacy `(info parts)' items still hydrate through the fallback path."
-  (let ((opencode-session--buffers (make-hash-table :test 'equal))
-        (buffer (generate-new-buffer " *oc-hydrate-v1*")))
-    (unwind-protect
-        (with-current-buffer buffer
-          (opencode-session-mode)
-          (setq-local opencode-session--session (opencode-session-create :id "s1"))
-          (opencode-session--hydrate-message
-           '((info . ((id . "msg_9") (sessionID . "s1") (type . "assistant")))
-             (parts . [((id . "p1") (type . "text") (text . "legacy"))])))
-          (let* ((message (car opencode-session--messages))
-                 (part (cdr (car (opencode-message-parts message)))))
-            (should (equal (opencode-message-role message) "assistant"))
-            (should (equal (opencode-message-part-text part) "legacy"))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

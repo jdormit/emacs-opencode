@@ -716,19 +716,6 @@ PREVIOUS-NAME is the previous buffer name to compare against."
            :key #'opencode-message-id
            :test #'string=))
 
-(defun opencode-session--upsert-message (info)
-  "Update message list using INFO."
-  (let* ((message-id (alist-get 'id info))
-         (message (opencode-session--find-message message-id)))
-    (if message
-        (opencode-session--update-message message info)
-      (setq message (opencode-session--message-from-info info))
-      (setq opencode-session--messages
-            (append opencode-session--messages (list message))))
-    (when message
-      (opencode-session--adopt-model-from-message message)
-      (opencode-session--render-header))))
-
 (defun opencode-session--adopt-model-from-message (message)
   "Adopt provider/model from MESSAGE for header display."
   (when (and (opencode-message-p message)
@@ -743,22 +730,16 @@ PREVIOUS-NAME is the previous buffer name to compare against."
 (defun opencode-session--update-message (message info)
   "Update MESSAGE fields from INFO.
 
-INFO is a V2 message alist (or a legacy V1 alist): the V2 message
-type doubles as the role, the model nests under `model', and errors
-carry `type'/`message'."
+INFO is a V2 message alist: the message `type' doubles as the role,
+the model nests under `model', and errors carry `type'/`message'."
   (let* ((time (alist-get 'time info))
          (model (alist-get 'model info))
-         (created (or (alist-get 'created time)
-                      (alist-get 'started info)))
-         (completed (or (alist-get 'completed time)
-                        (alist-get 'ended info)))
-         (provider-id (or (alist-get 'providerID info)
-                          (alist-get 'providerID model)))
-         (model-id (or (alist-get 'modelID info)
-                       (alist-get 'id model))))
+         (created (alist-get 'created time))
+         (completed (alist-get 'completed time))
+         (provider-id (alist-get 'providerID model))
+         (model-id (alist-get 'id model)))
     (setf (opencode-message-session-id message) (alist-get 'sessionID info))
-    (setf (opencode-message-role message)
-          (or (alist-get 'role info) (alist-get 'type info)))
+    (setf (opencode-message-role message) (alist-get 'type info))
     (setf (opencode-message-parent-id message) (alist-get 'parentID info))
     (setf (opencode-message-model-id message) model-id)
     (setf (opencode-message-provider-id message) provider-id)
@@ -857,16 +838,15 @@ output to add."
 (defun opencode-session--message-part-from-info (info)
   "Create a message part object from INFO.
 
-INFO is a V2 message content item or a legacy V1 part alist.  V2
-tool parts carry their name as `name' and their output inside
-`state.content'; both are normalized here so streaming updates,
-tool output fetches, and history hydration share one mapping."
+INFO is a V2 message content item or an internal streaming part.
+Tool parts carry their name as `name' for content items or `tool'
+for streaming parts, and their output inside `state.content'; both
+are normalized here so streaming updates, tool output fetches, and
+history hydration share one mapping."
   (let* ((time (alist-get 'time info))
-         (start (or (alist-get 'start time)
-                    (alist-get 'created time)
+         (start (or (alist-get 'created time)
                     (alist-get 'ran time)))
-         (end (or (alist-get 'end time)
-                  (alist-get 'completed time)))
+         (end (alist-get 'completed time))
          (state (opencode-session--normalize-part-state
                  (alist-get 'state info))))
     (opencode-message-part-create
@@ -927,9 +907,8 @@ compaction part as completed."
 (defun opencode-session--update-session (info)
   "Update the buffer session from INFO.
 
-INFO is a V2 session alist or a legacy V1 alist.  V2 identifies the
-session with `sessionID' and nests the directory under
-`location.directory'."
+INFO is a V2 session alist: the session id is `id' and the working
+directory nests under `location.directory'."
   (let* ((time (alist-get 'time info))
          (created (alist-get 'created time))
          (updated (alist-get 'updated time))
@@ -1194,34 +1173,19 @@ with BUFFER after the final page renders, or after an error."
     (fetch-page nil t)))
 
 (defun opencode-session--hydrate-message (item)
-  "Add a message ITEM returned from the API to the current buffer.
+  "Add a V2 message ITEM returned from the API to the current buffer.
 
 ITEM is a V2 message alist (role in `type', assistant body in
-`content', plain text in `text') or a legacy V1 item shaped as
-`(info parts)'.  Returns the hydrated message, or nil for an empty
-ITEM."
-  (let* ((info (alist-get 'info item))
-         (message (opencode-session--message-from-info (or info item))))
+`content', plain text in `text').  Returns the hydrated message, or
+nil for an empty ITEM."
+  (let ((message (opencode-session--message-from-info item)))
     (when message
-      (if info
-          (opencode-session--hydrate-legacy-message message item)
-        (opencode-session--hydrate-v2-message message item))
+      (opencode-session--hydrate-v2-message message item)
       (setf (opencode-message-text message)
             (opencode-session--message-text message))
       (setq opencode-session--messages
             (append opencode-session--messages (list message)))
       message)))
-
-(defun opencode-session--hydrate-legacy-message (message item)
-  "Hydrate a legacy V1 message ITEM shaped as `(info parts)' into MESSAGE."
-  (let* ((info (alist-get 'info item))
-         (parts (alist-get 'parts item))
-         (session-id (alist-get 'sessionID info)))
-    (setf (opencode-message-parts message)
-          (opencode-session--hydrate-parts parts))
-    ;; Register subagent mappings for any task tool parts.
-    (dolist (raw-part (opencode-session--normalize-items parts))
-      (opencode-session--maybe-register-subagent raw-part session-id))))
 
 (defun opencode-session--hydrate-v2-message (message item)
   "Populate MESSAGE from V2 message ITEM based on its `type'.
@@ -1307,18 +1271,6 @@ render a boundary line; failed compactions are skipped."
                     (when (and (stringp output)
                                (not (string-empty-p output)))
                       (concat "\n" output)))))))
-
-(defun opencode-session--hydrate-parts (parts)
-  "Hydrate PARTS into an alist of message parts."
-  (let (result)
-    (dolist (part (opencode-session--normalize-items parts))
-      (let* ((part-id (alist-get 'id part))
-             (data (opencode-session--message-part-from-info part))
-             (existing (assoc part-id result)))
-        (if existing
-            (setcdr existing data)
-          (push (cons part-id data) result))))
-    (nreverse result)))
 
 (provide 'emacs-opencode-session-mode)
 
