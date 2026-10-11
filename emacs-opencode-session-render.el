@@ -442,21 +442,30 @@ Only includes string, number, and boolean values."
 Clears the retry banner and form blocks before inserting so the new
 message lands above them, then re-renders both just above the input
 prompt."
-  (opencode-session--clear-retry-banner)
-  (opencode-session--clear-forms)
-  (let ((inhibit-read-only t))
-    (save-excursion
-      (goto-char (marker-position opencode-session--input-start-marker))
-      (let ((start (point)))
-        (insert text)
-        (let ((end (point)))
-          (setf (opencode-message-start-marker message) (copy-marker start))
-          (setf (opencode-message-end-marker message) (copy-marker end)))
-        (insert "\n")
-        (set-marker opencode-session--input-start-marker (point))
-        (set-marker opencode-session--input-marker (point-max))
-        (opencode-session--ensure-input-prompt)
-        (opencode-session--apply-message-properties start (point) face message))))
+  ;; When point rests at the end of the input (as it does right after a
+  ;; prompt is sent) the insertion happens exactly at point.  `save-excursion'
+  ;; would then leave point at the start of the new message instead of the
+  ;; input, so the window would stop following streamed output.  Remember the
+  ;; case and move point back to the input boundary afterwards.
+  (let ((follow-input (and opencode-session--input-start-marker
+                           (= (point) (point-max)))))
+    (opencode-session--clear-retry-banner)
+    (opencode-session--clear-forms)
+    (let ((inhibit-read-only t))
+      (save-excursion
+        (goto-char (marker-position opencode-session--input-start-marker))
+        (let ((start (point)))
+          (insert text)
+          (let ((end (point)))
+            (setf (opencode-message-start-marker message) (copy-marker start))
+            (setf (opencode-message-end-marker message) (copy-marker end)))
+          (insert "\n")
+          (set-marker opencode-session--input-start-marker (point))
+          (set-marker opencode-session--input-marker (point-max))
+          (opencode-session--ensure-input-prompt)
+          (opencode-session--apply-message-properties start (point) face message))))
+    (when follow-input
+      (goto-char (point-max))))
   (opencode-session--render-retry-banner)
   (opencode-session--render-forms))
 

@@ -887,6 +887,43 @@ banner, causing the prompt overlay to render before the banner."
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
+(ert-deftest test-opencode-session-mode/new-message-from-input-keeps-point-in-input ()
+  "A message inserted at the input boundary keeps point in the input.
+
+Regression: `save-excursion' restored point to the insertion seam (the
+start of the new message) whenever point sat at the end of an empty
+input, as it does right after a prompt is sent.  Point then fell out of
+the input region and the window stopped following streamed output."
+  (with-temp-buffer
+    (opencode-session-mode)
+    (opencode-session--ensure-markers)
+    (opencode-session--ensure-input-region)
+    ;; As left by `opencode-session--clear-input'.
+    (goto-char (point-max))
+    (let ((message (opencode-message-create :id "m1" :role "assistant"
+                                            :text "streamed response")))
+      (opencode-session--render-message message))
+    (should (= (point) (point-max)))
+    (should (>= (point)
+                (marker-position opencode-session--input-start-marker)))))
+
+(ert-deftest test-opencode-session-mode/new-message-preserves-typed-input-point ()
+  "Inserting a message while typing keeps point on the same input text."
+  (with-temp-buffer
+    (opencode-session-mode)
+    (opencode-session--ensure-markers)
+    (opencode-session--ensure-input-region)
+    (goto-char (point-max))
+    (insert "hello")
+    (goto-char (marker-position opencode-session--input-start-marker))
+    (forward-char 2)
+    (let ((message (opencode-message-create :id "m1" :role "assistant"
+                                            :text "streamed response")))
+      (opencode-session--render-message message))
+    (should (equal (opencode-session--current-input) "hello"))
+    (should (= (point)
+               (+ (marker-position opencode-session--input-start-marker) 2)))))
+
 (ert-deftest test-opencode-session-mode/toggle-reasoning-flips-state ()
   "Toggling reasoning flips the buffer-local visibility flag."
   (with-temp-buffer
