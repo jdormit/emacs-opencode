@@ -64,6 +64,49 @@
   "Return 0 for nil tokens (nil is a list in Elisp)."
   (should (= (opencode-session--tokens-total nil) 0)))
 
+;;; assistant-message helpers
+
+(ert-deftest test-opencode-header/has-assistant-messages-v2 ()
+  "A V2 assistant message (role derived from `type') is detected."
+  (let ((opencode-session--messages
+         (list (opencode-message-create :role "assistant"))))
+    (should (opencode-session--has-assistant-messages-p))))
+
+(ert-deftest test-opencode-header/has-assistant-messages-none ()
+  "Only user messages means no assistant messages."
+  (let ((opencode-session--messages
+         (list (opencode-message-create :role "user"))))
+    (should-not (opencode-session--has-assistant-messages-p))))
+
+(ert-deftest test-opencode-header/assistant-cost-total ()
+  "Sum the cost carried on assistant message info."
+  (let* ((assistant (opencode-message-create :role "assistant"))
+         (opencode-session--messages
+          (list (progn (setf (opencode-message-info assistant)
+                             '((cost . 0.25)))
+                       assistant)
+                (opencode-message-create :role "user"))))
+    (should (= (opencode-session--assistant-cost-total) 0.25))))
+
+(ert-deftest test-opencode-header/last-assistant-info ()
+  "Return the most recent assistant info carrying output tokens."
+  (let* ((first (opencode-message-create :role "assistant"))
+         (last (opencode-message-create :role "assistant"))
+         (opencode-session--messages (list first last)))
+    (setf (opencode-message-info first) '((tokens . ((output . 5)))))
+    (setf (opencode-message-info last) '((tokens . ((output . 42)))))
+    (should (equal (alist-get 'output
+                              (alist-get 'tokens
+                                         (opencode-session--last-assistant-info)))
+                   42))))
+
+(ert-deftest test-opencode-header/last-assistant-info-skips-user ()
+  "User messages never provide assistant token info."
+  (let* ((user (opencode-message-create :role "user"))
+         (opencode-session--messages (list user)))
+    (setf (opencode-message-info user) '((tokens . ((output . 7)))))
+    (should-not (opencode-session--last-assistant-info))))
+
 ;;; status-busy-p
 
 (ert-deftest test-opencode-header/status-busy-p-idle ()

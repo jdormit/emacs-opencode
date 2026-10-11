@@ -207,19 +207,16 @@ Most recently used first."
 (defun opencode-session--has-assistant-messages-p ()
   "Return non-nil when session has assistant messages."
   (cl-loop for message in opencode-session--messages
-           for info = (opencode-message-info message)
-           for role = (alist-get 'role info)
-           when (string= role "assistant")
+           when (string= (opencode-message-role message) "assistant")
            return t))
 
 (defun opencode-session--assistant-cost-total ()
   "Return the total cost for assistant messages in the session."
   (let ((total 0.0))
     (dolist (message opencode-session--messages total)
-      (let* ((info (opencode-message-info message))
-             (role (alist-get 'role info))
-             (cost (alist-get 'cost info)))
-        (when (and (string= role "assistant") (numberp cost))
+      (let ((cost (alist-get 'cost (opencode-message-info message))))
+        (when (and (string= (opencode-message-role message) "assistant")
+                   (numberp cost))
           (setq total (+ total cost)))))))
 
 (defun opencode-session--header-context-string ()
@@ -238,10 +235,9 @@ Most recently used first."
   "Return the last assistant message info with output tokens."
   (cl-loop for message in (reverse opencode-session--messages)
            for info = (opencode-message-info message)
-           for role = (alist-get 'role info)
            for tokens = (alist-get 'tokens info)
            for output = (alist-get 'output tokens)
-           when (and (string= role "assistant")
+           when (and (string= (opencode-message-role message) "assistant")
                      (numberp output)
                      (> output 0))
            return info))
