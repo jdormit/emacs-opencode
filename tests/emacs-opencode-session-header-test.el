@@ -64,6 +64,49 @@
   "Return 0 for nil tokens (nil is a list in Elisp)."
   (should (= (opencode-session--tokens-total nil) 0)))
 
+;;; assistant-message helpers
+
+(ert-deftest test-opencode-header/has-assistant-messages-v2 ()
+  "A V2 assistant message (role derived from `type') is detected."
+  (let ((opencode-session--messages
+         (list (opencode-message-create :role "assistant"))))
+    (should (opencode-session--has-assistant-messages-p))))
+
+(ert-deftest test-opencode-header/has-assistant-messages-none ()
+  "Only user messages means no assistant messages."
+  (let ((opencode-session--messages
+         (list (opencode-message-create :role "user"))))
+    (should-not (opencode-session--has-assistant-messages-p))))
+
+(ert-deftest test-opencode-header/assistant-cost-total ()
+  "Sum the cost carried on assistant message info."
+  (let* ((assistant (opencode-message-create :role "assistant"))
+         (opencode-session--messages
+          (list (progn (setf (opencode-message-info assistant)
+                             '((cost . 0.25)))
+                       assistant)
+                (opencode-message-create :role "user"))))
+    (should (= (opencode-session--assistant-cost-total) 0.25))))
+
+(ert-deftest test-opencode-header/last-assistant-info ()
+  "Return the most recent assistant info carrying output tokens."
+  (let* ((first (opencode-message-create :role "assistant"))
+         (last (opencode-message-create :role "assistant"))
+         (opencode-session--messages (list first last)))
+    (setf (opencode-message-info first) '((tokens . ((output . 5)))))
+    (setf (opencode-message-info last) '((tokens . ((output . 42)))))
+    (should (equal (alist-get 'output
+                              (alist-get 'tokens
+                                         (opencode-session--last-assistant-info)))
+                   42))))
+
+(ert-deftest test-opencode-header/last-assistant-info-skips-user ()
+  "User messages never provide assistant token info."
+  (let* ((user (opencode-message-create :role "user"))
+         (opencode-session--messages (list user)))
+    (setf (opencode-message-info user) '((tokens . ((output . 7)))))
+    (should-not (opencode-session--last-assistant-info))))
+
 ;;; status-busy-p
 
 (ert-deftest test-opencode-header/status-busy-p-idle ()
@@ -163,6 +206,39 @@
   "Retry status with no message and no countdown returns nil."
   (let ((status (opencode-status-create :type "retry")))
     (should (null (opencode-session--header-retry-segment status)))))
+
+;;; model-context-limit
+
+(ert-deftest test-opencode-header/model-context-limit ()
+  "Read the context limit from the flat V2 model list."
+  (with-temp-buffer
+    (setq-local opencode-session--connection
+                (opencode-connection-create
+                 :models '(((id . "gpt-6") (modelID . "gpt-6")
+                            (providerID . "openai")
+                            (limit . ((context . 200000)
+                                      (input . 100000)
+                                      (output . 100000)))))))
+    (should (equal (opencode-session--model-context-limit "openai" "gpt-6")
+                   200000))))
+
+(ert-deftest test-opencode-header/model-context-limit-by-model-id ()
+  "Match the model by modelID when the catalog id differs."
+  (with-temp-buffer
+    (setq-local opencode-session--connection
+                (opencode-connection-create
+                 :models '(((id . "gpt-6-fast") (modelID . "gpt-6")
+                            (providerID . "openai")
+                            (limit . ((context . 128000)))))))
+    (should (equal (opencode-session--model-context-limit "openai" "gpt-6")
+                   128000))))
+
+(ert-deftest test-opencode-header/model-context-limit-missing ()
+  "Return nil when the model is unknown."
+  (with-temp-buffer
+    (setq-local opencode-session--connection
+                (opencode-connection-create :models nil))
+    (should (null (opencode-session--model-context-limit "openai" "nope")))))
 
 (provide 'emacs-opencode-session-header-test)
 

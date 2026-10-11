@@ -2,6 +2,10 @@
 //
 // Run with: node tests/opencode-sse-bridge.test.js
 // or:       bun tests/opencode-sse-bridge.test.js
+//
+// Events are V2 envelopes: `{id, created, type, location, data, durable}`.
+// The bridge reads the payload from `data` and strips a few large fields the
+// Emacs client never uses (see `stripLargeFields` in opencode-sse-bridge.js).
 
 "use strict";
 
@@ -112,9 +116,9 @@ async function runTests() {
 
   await test("filters events by type", async () => {
     const events = [
-      { type: "session.created", properties: { sessionID: "s1" } },
-      { type: "session.diff", properties: { sessionID: "s1", diff: "big" } },
-      { type: "message.updated", properties: { sessionID: "s1" } },
+      { type: "session.created", data: { id: "s1" } },
+      { type: "session.diff", data: { sessionID: "s1", diff: "big" } },
+      { type: "message.updated", data: { sessionID: "s1" } },
     ];
     const server = await createSSEServer(events);
     const port = server.address().port;
@@ -122,7 +126,7 @@ async function runTests() {
     try {
       const { lines } = await runBridge([
         "--url",
-        `http://127.0.0.1:${port}/event`,
+        `http://127.0.0.1:${port}/api/event`,
         "--events",
         "session.created,message.updated",
       ]);
@@ -139,22 +143,19 @@ async function runTests() {
     const events = [
       {
         type: "session.created",
-        properties: {
-          sessionID: "s1",
-          info: {
-            id: "s1",
-            title: "Test",
-            summary: {
-              additions: 10,
-              deletions: 5,
-              files: 2,
-              diffs: [
-                {
-                  file: "a.js",
-                  patch: "--- a/a.js\n+++ b/a.js\n@@ huge diff @@",
-                },
-              ],
-            },
+        data: {
+          id: "s1",
+          title: "Test",
+          summary: {
+            additions: 10,
+            deletions: 5,
+            files: 2,
+            diffs: [
+              {
+                file: "a.js",
+                patch: "--- a/a.js\n+++ b/a.js\n@@ huge diff @@",
+              },
+            ],
           },
         },
       },
@@ -165,39 +166,36 @@ async function runTests() {
     try {
       const { lines } = await runBridge([
         "--url",
-        `http://127.0.0.1:${port}/event`,
+        `http://127.0.0.1:${port}/api/event`,
         "--events",
         "session.created",
       ]);
 
       assertEqual(lines.length, 1);
-      const info = lines[0].properties.info;
+      const data = lines[0].data;
       // summary should exist but diffs should be stripped
-      assert(info.summary, "summary should exist");
-      assertEqual(info.summary.additions, 10, "additions preserved");
-      assertEqual(info.summary.diffs, undefined, "diffs should be stripped");
+      assert(data.summary, "summary should exist");
+      assertEqual(data.summary.additions, 10, "additions preserved");
+      assertEqual(data.summary.diffs, undefined, "diffs should be stripped");
     } finally {
       server.close();
     }
   });
 
-  await test("strips summary.diffs from session.updated", async () => {
+  await test("strips summary.diffs and revert fields from session.updated", async () => {
     const events = [
       {
         type: "session.updated",
-        properties: {
-          sessionID: "s1",
-          info: {
-            id: "s1",
-            summary: {
-              additions: 1,
-              diffs: [{ file: "b.js", patch: "large patch" }],
-            },
-            revert: {
-              diff: "revert diff text",
-              snapshot: "abc123",
-              other: "keep",
-            },
+        data: {
+          id: "s1",
+          summary: {
+            additions: 1,
+            diffs: [{ file: "b.js", patch: "large patch" }],
+          },
+          revert: {
+            diff: "revert diff text",
+            snapshot: "abc123",
+            other: "keep",
           },
         },
       },
@@ -208,41 +206,34 @@ async function runTests() {
     try {
       const { lines } = await runBridge([
         "--url",
-        `http://127.0.0.1:${port}/event`,
+        `http://127.0.0.1:${port}/api/event`,
         "--events",
         "session.updated",
       ]);
 
       assertEqual(lines.length, 1);
-      const info = lines[0].properties.info;
-      assertEqual(info.summary.diffs, undefined, "summary.diffs stripped");
-      assertEqual(info.summary.additions, 1, "additions preserved");
-      assertEqual(info.revert.diff, undefined, "revert.diff stripped");
-      assertEqual(info.revert.snapshot, undefined, "revert.snapshot stripped");
-      assertEqual(info.revert.other, "keep", "other revert fields preserved");
+      const data = lines[0].data;
+      assertEqual(data.summary.diffs, undefined, "summary.diffs stripped");
+      assertEqual(data.summary.additions, 1, "additions preserved");
+      assertEqual(data.revert.diff, undefined, "revert.diff stripped");
+      assertEqual(data.revert.snapshot, undefined, "revert.snapshot stripped");
+      assertEqual(data.revert.other, "keep", "other revert fields preserved");
     } finally {
       server.close();
     }
   });
 
-  await test("strips state.output from completed tool parts", async () => {
+  await test("strips content from session.tool.success", async () => {
     const events = [
       {
-        type: "message.part.updated",
-        properties: {
+        type: "session.tool.success",
+        data: {
+          id: "t1",
           sessionID: "s1",
-          part: {
-            id: "p1",
-            type: "tool",
-            tool: "read",
-            state: {
-              status: "completed",
-              title: "Read file.js",
-              output: "entire file contents here, very large ...",
-              input: { filePath: "/path/file.js", raw: '{"filePath":"/path/file.js"}' },
-              metadata: { output: "truncated preview" },
-              attachments: [{ url: "data:image/png;base64,verylongdata" }],
-            },
+          assistantMessageID: "m1",
+          content: "entire tool output here, very large ...",
+          metadata: {
+            input: { filePath: "/path/file.js" },
           },
         },
       },
@@ -253,110 +244,35 @@ async function runTests() {
     try {
       const { lines } = await runBridge([
         "--url",
-        `http://127.0.0.1:${port}/event`,
+        `http://127.0.0.1:${port}/api/event`,
         "--events",
-        "message.part.updated",
+        "session.tool.success",
       ]);
 
       assertEqual(lines.length, 1);
-      const state = lines[0].properties.part.state;
-      assertEqual(state.output, undefined, "output stripped");
-      assertEqual(state.attachments, undefined, "attachments stripped");
-      assertEqual(state.input.raw, undefined, "input.raw stripped");
+      const data = lines[0].data;
+      assertEqual(data.content, undefined, "content stripped");
       // Preserved fields
-      assertEqual(state.status, "completed", "status preserved");
-      assertEqual(state.title, "Read file.js", "title preserved");
-      assertEqual(state.input.filePath, "/path/file.js", "input.filePath preserved");
-      assertEqual(state.metadata.output, "truncated preview", "metadata.output preserved");
+      assertEqual(data.id, "t1", "tool id preserved");
+      assertEqual(data.sessionID, "s1", "sessionID preserved");
+      assertEqual(
+        data.metadata.input.filePath,
+        "/path/file.js",
+        "metadata.input.filePath preserved"
+      );
     } finally {
       server.close();
     }
   });
 
-  await test("does not strip from pending tool parts (no output)", async () => {
+  await test("passes through session.text.delta unchanged", async () => {
     const events = [
       {
-        type: "message.part.updated",
-        properties: {
+        type: "session.text.delta",
+        data: {
           sessionID: "s1",
-          part: {
-            id: "p1",
-            type: "tool",
-            state: {
-              status: "pending",
-              input: { command: "ls", raw: '{"command":"ls"}' },
-            },
-          },
-        },
-      },
-    ];
-    const server = await createSSEServer(events);
-    const port = server.address().port;
-
-    try {
-      const { lines } = await runBridge([
-        "--url",
-        `http://127.0.0.1:${port}/event`,
-        "--events",
-        "message.part.updated",
-      ]);
-
-      assertEqual(lines.length, 1);
-      const state = lines[0].properties.part.state;
-      assertEqual(state.status, "pending", "status preserved");
-      assertEqual(state.input.command, "ls", "input.command preserved");
-      assertEqual(state.input.raw, undefined, "input.raw stripped");
-    } finally {
-      server.close();
-    }
-  });
-
-  await test("strips summary.diffs from message.updated", async () => {
-    const events = [
-      {
-        type: "message.updated",
-        properties: {
-          sessionID: "s1",
-          info: {
-            id: "m1",
-            role: "user",
-            summary: {
-              title: "Edit",
-              diffs: [{ file: "c.js", patch: "large diff" }],
-            },
-          },
-        },
-      },
-    ];
-    const server = await createSSEServer(events);
-    const port = server.address().port;
-
-    try {
-      const { lines } = await runBridge([
-        "--url",
-        `http://127.0.0.1:${port}/event`,
-        "--events",
-        "message.updated",
-      ]);
-
-      assertEqual(lines.length, 1);
-      const info = lines[0].properties.info;
-      assertEqual(info.summary.title, "Edit", "title preserved");
-      assertEqual(info.summary.diffs, undefined, "diffs stripped");
-    } finally {
-      server.close();
-    }
-  });
-
-  await test("passes through events without large fields unchanged", async () => {
-    const events = [
-      {
-        type: "message.part.delta",
-        properties: {
-          sessionID: "s1",
-          messageID: "m1",
-          partID: "p1",
-          field: "text",
+          assistantMessageID: "m1",
+          ordinal: 0,
           delta: "hello world",
         },
       },
@@ -367,14 +283,46 @@ async function runTests() {
     try {
       const { lines } = await runBridge([
         "--url",
-        `http://127.0.0.1:${port}/event`,
+        `http://127.0.0.1:${port}/api/event`,
         "--events",
-        "message.part.delta",
+        "session.text.delta",
       ]);
 
       assertEqual(lines.length, 1);
-      assertEqual(lines[0].properties.delta, "hello world");
-      assertEqual(lines[0].properties.field, "text");
+      assertEqual(lines[0].data.delta, "hello world");
+      assertEqual(lines[0].data.assistantMessageID, "m1");
+    } finally {
+      server.close();
+    }
+  });
+
+  await test("passes through session.tool.called unchanged", async () => {
+    const events = [
+      {
+        type: "session.tool.called",
+        data: {
+          id: "t1",
+          sessionID: "s1",
+          assistantMessageID: "m1",
+          input: { command: "ls", raw: '{"command":"ls"}' },
+        },
+      },
+    ];
+    const server = await createSSEServer(events);
+    const port = server.address().port;
+
+    try {
+      const { lines } = await runBridge([
+        "--url",
+        `http://127.0.0.1:${port}/api/event`,
+        "--events",
+        "session.tool.called",
+      ]);
+
+      assertEqual(lines.length, 1);
+      const data = lines[0].data;
+      assertEqual(data.input.command, "ls", "input.command preserved");
+      assertEqual(data.input.raw, '{"command":"ls"}', "input.raw preserved");
     } finally {
       server.close();
     }
@@ -386,9 +334,7 @@ async function runTests() {
       const s = createServer((req, res) => {
         receivedAuth = req.headers.authorization;
         res.writeHead(200, { "Content-Type": "text/event-stream" });
-        res.write(
-          'data: {"type":"test.event","properties":{}}\n\n'
-        );
+        res.write('data: {"type":"test.event","data":{}}\n\n');
         setTimeout(() => res.end(), 50);
       });
       s.listen(0, "127.0.0.1", () => resolve(s));
@@ -398,18 +344,14 @@ async function runTests() {
     try {
       await runBridge([
         "--url",
-        `http://127.0.0.1:${port}/event`,
+        `http://127.0.0.1:${port}/api/event`,
         "--events",
         "test.event",
         "--auth",
         "dXNlcjpwYXNz",
       ]);
 
-      assertEqual(
-        receivedAuth,
-        "Basic dXNlcjpwYXNz",
-        "auth header sent"
-      );
+      assertEqual(receivedAuth, "Basic dXNlcjpwYXNz", "auth header sent");
     } finally {
       server.close();
     }
@@ -418,7 +360,7 @@ async function runTests() {
   await test("exits with error on connection failure", async () => {
     const { code, stderr } = await runBridge([
       "--url",
-      "http://127.0.0.1:1/event",
+      "http://127.0.0.1:1/api/event",
       "--events",
       "test.event",
     ]);
@@ -436,7 +378,7 @@ async function runTests() {
   await test("exits with error for missing --events", async () => {
     const { code, stderr } = await runBridge([
       "--url",
-      "http://localhost:9999/event",
+      "http://localhost:9999/api/event",
     ]);
     assert(code !== 0, "should exit with non-zero code");
     assert(stderr.includes("--events"), "stderr mentions --events");

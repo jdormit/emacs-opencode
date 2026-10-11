@@ -1,13 +1,15 @@
 #+TITLE: Emacs OpenCode TODO
 
+This package targets the OpenCode V2 API. For the status of the V1→V2
+migration, including items deferred during it, see [[file:TODO-V2.md][TODO-V2.md]].
+
 * TODO Surface =tui.toast.show= events
-The OpenCode server forwards every bus event over the SSE stream
-via =Bus.subscribeAll=, including =tui.toast.show= events used by the
-MCP auth flow and any external caller of =POST /tui/toast=.  We
-currently ignore them.  Surface in the echo area at minimum, with
+The OpenCode server forwards bus events over the SSE stream, including
+=tui.toast.show= events used by the MCP auth flow and by other callers.
+We currently ignore them.  Surface in the echo area at minimum, with
 a face based on the variant (info/success/warning/error).
 
-* TODO Handle =installation.update-available= events
+* TODO Handle =installation.updated= events
 The TUI prompts the user via a confirm dialog and runs an upgrade.
 At minimum we should =message= the user; eventually a customizable
 hook so users can wire it to whatever update flow they prefer.
@@ -127,6 +129,8 @@ CLOSED: [2026-01-29 Thu 14:19]
 - =question.asked= SSE
 - Prompts the user in Emacs via =completing-read=, with an option to type
   your own answer.
+- Superseded in V2 by forms (=form.*= events, =/api/session/{id}/form=);
+  see [[file:TODO-V2.md][TODO-V2.md]].
 
 ** DONE Handle permission requests
 CLOSED: [2026-01-29 Thu 10:39]

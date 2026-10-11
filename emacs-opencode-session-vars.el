@@ -104,6 +104,31 @@ to an arbitrary buffer that may belong to a different server."
    ((listp items) items)
    (t nil)))
 
+(cl-defstruct (opencode-session--form-state
+               (:constructor opencode-session--form-state-create))
+  form-id
+  session-id
+  form
+  status
+  answers
+  self-answered
+  start-marker
+  end-marker)
+
+(defvar-local opencode-session--forms nil
+  "List of `opencode-session--form-state' objects rendered in this buffer.
+
+The list covers pending forms (awaiting an answer) as well as settled
+ones (answered or cancelled), each rendered as a compact block just
+above the input prompt.")
+
+(defun opencode-session--find-form (form-id)
+  "Return the form state for FORM-ID in the current buffer, or nil."
+  (cl-find-if (lambda (form-state)
+                (string= (opencode-session--form-state-form-id form-state)
+                         form-id))
+              opencode-session--forms))
+
 (defun opencode-session--register-subagent (subagent-session-id parent-session-id task-part-id)
   "Register SUBAGENT-SESSION-ID as a child of PARENT-SESSION-ID.
 TASK-PART-ID is the part ID of the task tool call in the parent."

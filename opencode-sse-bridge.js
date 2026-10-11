@@ -50,45 +50,29 @@ function parseArgs(argv) {
 // Strip fields from parsed event data that the Emacs client never reads but
 // that can be very large.  The rules are derived from tracing through the
 // Emacs handler code and confirming which fields are accessed.
+//
+// V2 events arrive as an envelope `{id, created, type, location, data,
+// durable}`; the payload the client consumes is `event.data`.
 
 function stripLargeFields(event) {
   const type = event.type;
-  const props = event.properties;
-  if (!props) return;
+  const data = event.data;
+  if (!data || typeof data !== "object") return;
 
   // session.created / session.updated — strip summary.diffs and revert
   if (type === "session.created" || type === "session.updated") {
-    const info = props.info;
-    if (info) {
-      if (info.summary) delete info.summary.diffs;
-      if (info.revert) {
-        delete info.revert.diff;
-        delete info.revert.snapshot;
-      }
+    if (data.summary) delete data.summary.diffs;
+    if (data.revert) {
+      delete data.revert.diff;
+      delete data.revert.snapshot;
     }
   }
 
-  // message.updated — strip summary.diffs on user messages
-  if (type === "message.updated") {
-    const info = props.info;
-    if (info && info.summary && info.summary.diffs) {
-      delete info.summary.diffs;
-    }
-  }
-
-  // message.part.updated — strip tool part state.output, state.attachments,
-  // state.input.raw (Emacs uses state.metadata.* and state.input.* instead)
-  if (type === "message.part.updated") {
-    const state = props.part && props.part.state;
-    if (state) {
-      if (state.status === "completed") {
-        delete state.output;
-        delete state.attachments;
-      }
-      if (state.input) {
-        delete state.input.raw;
-      }
-    }
+  // session.tool.success — strip full tool output from `content`.  The
+  // Emacs client shows output in the per-tool drawer and refetches the
+  // message on demand (the message endpoint returns full content).
+  if (type === "session.tool.success") {
+    delete data.content;
   }
 }
 
