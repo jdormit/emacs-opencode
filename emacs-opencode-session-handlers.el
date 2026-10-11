@@ -31,7 +31,7 @@
   status)
 
 (defvar opencode-session--pending-prompts (make-hash-table :test #'eq)
-  "Pending permission and question prompts grouped by connection.")
+  "Pending permission and form prompts grouped by connection.")
 
 (defvar opencode-session--active-prompt nil
   "State for the OpenCode prompt currently using the minibuffer.")
@@ -994,121 +994,6 @@ while no session buffer was open)."
                      `((data . ((form . ,form))))
                      (list :connection connection)))))
      :error (lambda (&rest _args) nil))))
-
-;;;
-;;; The V1 question helpers below are kept for reference and covered
-;;; by tests, but no question events are registered (V2 asks questions
-;;; with forms, handled above).
-
-(defun opencode-session--question-list (questions)
-  "Normalize QUESTIONS into a list."
-  (cond
-   ((vectorp questions) (append questions nil))
-   ((listp questions) questions)
-   (t nil)))
-
-(defun opencode-session--question-options (question)
-  "Return option labels for QUESTION."
-  (let ((options (alist-get 'options question)))
-    (mapcar (lambda (option) (alist-get 'label option))
-            (opencode-session--normalize-items options))))
-
-(defun opencode-session--question-multiple-p (question)
-  "Return non-nil if QUESTION allows multiple answers."
-  (eq (alist-get 'multiple question) t))
-
-(defun opencode-session--question-custom-p (question)
-  "Return non-nil if QUESTION allows custom answers."
-  (let ((custom (alist-get 'custom question :missing)))
-    (not (or (eq custom :json-false)
-             (eq custom json-false)
-             (eq custom nil)))))
-
-(defun opencode-session--question-prompt-label (question)
-  "Return the minibuffer prompt label for QUESTION."
-  (let ((header (alist-get 'header question))
-        (text (alist-get 'question question)))
-    (if (and header (not (string-empty-p header)))
-        (format "OpenCode %s: %s " header text)
-      (format "OpenCode: %s " text))))
-
-(defun opencode-session--question-read-custom (prompt)
-  "Read a custom answer using PROMPT."
-  (read-string (concat prompt "(Other): ")))
-
-(defun opencode-session--question-read-single (question)
-  "Prompt for a single answer to QUESTION.
-
-Returns a list containing one answer string."
-  (let* ((prompt (opencode-session--question-prompt-label question))
-         (options (opencode-session--question-options question))
-         (custom (opencode-session--question-custom-p question))
-         (choices (if custom (append options '("Other")) options))
-         (selection (completing-read prompt choices nil t)))
-    (if (and custom (string= selection "Other"))
-        (list (opencode-session--question-read-custom prompt))
-      (list selection))))
-
-(defun opencode-session--question-read-multiple (question)
-  "Prompt for multiple answers to QUESTION.
-
-Returns a list of answer strings."
-  (let* ((prompt (opencode-session--question-prompt-label question))
-         (options (opencode-session--question-options question))
-         (custom (opencode-session--question-custom-p question))
-         (choices (if custom (append options '("Other")) options))
-         (selection (completing-read-multiple prompt choices nil t)))
-    (if (and custom (member "Other" selection))
-        (let ((custom-answer (opencode-session--question-read-custom prompt)))
-          (append (remove "Other" selection) (list custom-answer)))
-      selection)))
-
-(defun opencode-session--question-answers (questions)
-  "Return answers for QUESTIONS via minibuffer prompts."
-  (mapcar (lambda (question)
-            (if (opencode-session--question-multiple-p question)
-                (opencode-session--question-read-multiple question)
-              (opencode-session--question-read-single question)))
-          questions))
-
-(defun opencode-session--prompt-question (payload connection state)
-  "Prompt for question PAYLOAD and send a response via CONNECTION.
-STATE tracks whether another client resolves the request."
-  (let* ((request-id (alist-get 'id payload))
-         (questions (opencode-session--question-list (alist-get 'questions payload)))
-         (answers
-          (let ((opencode-session--active-prompt state))
-            (condition-case nil
-                (minibuffer-with-setup-hook
-                    (lambda ()
-                      (setq-local opencode-session--minibuffer-prompt state))
-                  (opencode-session--question-answers questions))
-              (quit (unless (eq (opencode-session--prompt-state-status state)
-                                'resolved)
-                      :reject))))))
-    (unless connection
-      (error "OpenCode session is not connected"))
-    (unless request-id
-      (error "OpenCode question request is missing ID"))
-    (unless (eq (opencode-session--prompt-state-status state) 'resolved)
-      (setf (opencode-session--prompt-state-status state) 'answered)
-      (opencode-session--remove-prompt state)
-      (if (eq answers :reject)
-          (opencode-client-question-reject
-           connection
-           request-id
-           :success (lambda (&rest _args)
-                       (message "OpenCode question rejected"))
-           :error (lambda (&rest _args)
-                    (message "OpenCode: failed to reject question")))
-        (opencode-client-question-reply
-         connection
-         request-id
-         answers
-         :success (lambda (&rest _args)
-                    (message "OpenCode question reply sent"))
-         :error (lambda (&rest _args)
-                  (message "OpenCode: failed to reply to question")))))))
 
 ;;; File revert handling
 

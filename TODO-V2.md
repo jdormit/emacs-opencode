@@ -1,9 +1,8 @@
 # OpenCode V2 Migration — Remaining Phases
 
 Status of the native V2 migration of this package (targets OpenCode V2 only;
-V1 and V2 are not installed side-by-side). The core migration, including the
-provider/model catalog and auth, is done and staged; only final tests/docs
-cleanup remains.
+V1 and V2 are not installed side-by-side). The migration is complete through
+Phase 8; all phases are listed under Completed below.
 
 ## Completed
 
@@ -61,20 +60,22 @@ cleanup remains.
     `emacs-opencode-connection.el` are fixed by declaring `(conn &rest args)`.
   - Full ERT suite green (550 tests), byte-compile unchanged apart from the two
     pre-existing warnings, no new checkdoc warnings.
-
-## Remaining
-
-### Phase 8 — Tests & docs
-
-- **Tests.** Phase 7 added coverage for the new client endpoints, the
-  connection caches, the V2 model/candidate/integration shapes, and the auth
-  helpers. Any *remaining* ERT assertions still encoding V1 response shapes
-  (question payloads, V1 message envelopes) should be audited.
-- **Docs.** Audit `README.org` and `ARCHITECTURE.org` for anything still worded
-  around V1 concepts (e.g., the "shell prompt endpoint" phrasing, session
-  hydration/streaming model descriptions, the `TODO.org` roadmap) and align
-  them with the V2 API and event vocabulary. `TODO.org` may link here for the
-  deferred items.
+- **Phase 8 — Tests & docs.** Final cleanup of V1 leftovers:
+  - Tests: updated stale V1-shaped fixtures to the V2 `data` envelope and V2
+    event names (`tests/emacs-opencode-sse-test.el`), and rewrote the
+    long-broken JS bridge test to V2 event shapes
+    (`tests/opencode-sse-bridge.test.js`, now 10/10 under both node and bun).
+  - Docs: aligned `README.org` (V2 target note, `opencode-server-password`,
+    shell-prompt wording), `ARCHITECTURE.org` (V2 `/api` endpoints and the
+    `data` event envelope), and `TODO.org` (V2 migration link, V1 API
+    references removed) with the V2 API and event vocabulary.
+  - Audited the dead V1 question machinery: the live v2.0.26 server exposes
+    `/api/form/...` and no question endpoints, so V2 asks questions with forms.
+    Removed the obsolete code — the `opencode-session--question-*` helpers,
+    `opencode-session--prompt-question`, `opencode--vectorize-answers`, the
+    `opencode-client-question-reply`/`-reject` methods, and their tests.
+  - Full ERT suite green (539 tests), byte-compile unchanged apart from the two
+    pre-existing warnings, no new checkdoc warnings.
 
 ## Design notes carried over
 
@@ -82,3 +83,6 @@ cleanup remains.
   struct builders rather than faking V1 envelopes — the V2 model is
   event-sourced, so a compatibility layer would be lossy.
 - **V2 only:** no V1 compatibility paths are kept.
+- **Questions are forms in V2:** the live v2.0.26 server exposes
+  `/api/session/{id}/form` (with `form.created|replied|cancelled` events) and no
+  question endpoints, so V2 asks the user with forms.

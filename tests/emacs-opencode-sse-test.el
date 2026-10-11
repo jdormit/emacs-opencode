@@ -241,7 +241,7 @@
         (conn (opencode-connection-create)))
     (opencode-sse--initialize-state conn)
     (opencode-sse-register-handler
-     "message.created"
+     "session.created"
      (lambda (_event data _meta)
        (setq dispatched data)))
     ;; Unhandled event with split boundary — enters drop mode.
@@ -250,7 +250,7 @@
     (should (opencode-sse--read-state conn :dropping))
     ;; Boundary for unhandled event + start of handled event.
     (opencode-sse--process-chunk
-     conn "\ndata: {\"type\":\"message.created\",\"id\":7}\n\n")
+     conn "\ndata: {\"type\":\"session.created\",\"id\":7}\n\n")
     (should-not (opencode-sse--read-state conn :dropping))
     (should dispatched)
     (should (equal (alist-get 'id dispatched) 7))))
@@ -515,10 +515,10 @@
 (ert-deftest test-opencode-sse/bridge-parse-line-valid ()
   "Parse a valid JSON line from the bridge."
   (let ((result (opencode-sse--bridge-parse-line
-                 "{\"type\":\"session.created\",\"properties\":{\"sessionID\":\"abc\"}}")))
+                 "{\"type\":\"session.created\",\"data\":{\"sessionID\":\"abc\"}}")))
     (should result)
     (should (equal (alist-get 'type result) "session.created"))
-    (should (equal (alist-get 'sessionID (alist-get 'properties result)) "abc"))))
+    (should (equal (alist-get 'sessionID (alist-get 'data result)) "abc"))))
 
 (ert-deftest test-opencode-sse/bridge-parse-line-invalid ()
   "Return nil for invalid JSON."
@@ -552,7 +552,7 @@
      (lambda (_event data _meta) (setq dispatched data)))
     (opencode-sse--bridge-process-output
      conn
-     "{\"type\":\"session.created\",\"properties\":{\"id\":1}}\n")
+     "{\"type\":\"session.created\",\"data\":{\"id\":1}}\n")
     (should dispatched)
     (should (equal (alist-get 'type dispatched) "session.created"))
     ;; Line buffer should be empty after processing.
@@ -569,7 +569,7 @@
      (lambda (_event _data meta) (setq received-conn (plist-get meta :connection))))
     (opencode-sse--bridge-process-output
      conn
-     "{\"type\":\"conn.bridge\",\"properties\":{\"id\":1}}\n")
+     "{\"type\":\"conn.bridge\",\"data\":{\"id\":1}}\n")
     (should (eq received-conn conn))))
 
 (ert-deftest test-opencode-sse/bridge-process-split-across-calls ()

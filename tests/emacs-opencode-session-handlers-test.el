@@ -107,54 +107,6 @@
                  '((action . "custom")))))
     (should (string-match-p "use custom" result))))
 
-;;; question helpers (deferred V1 machinery, kept for reference)
-
-(ert-deftest test-opencode-handlers/question-list-vector ()
-  "Normalize question vector."
-  (should (equal (opencode-session--question-list [1 2]) '(1 2))))
-
-(ert-deftest test-opencode-handlers/question-list-nil ()
-  "Return nil for nil."
-  (should (null (opencode-session--question-list nil))))
-
-(ert-deftest test-opencode-handlers/question-options ()
-  "Extract option labels."
-  (should (equal (opencode-session--question-options
-                  '((options . [((label . "Yes")) ((label . "No"))])))
-                 '("Yes" "No"))))
-
-(ert-deftest test-opencode-handlers/question-multiple-p-true ()
-  "Detect multiple-answer questions."
-  (should (opencode-session--question-multiple-p '((multiple . t)))))
-
-(ert-deftest test-opencode-handlers/question-multiple-p-false ()
-  "Non-multiple returns nil."
-  (should (null (opencode-session--question-multiple-p '((multiple . nil))))))
-
-(ert-deftest test-opencode-handlers/question-custom-p-true ()
-  "Detect custom-answer questions."
-  (should (opencode-session--question-custom-p '((custom . t)))))
-
-(ert-deftest test-opencode-handlers/question-custom-p-false ()
-  "Non-custom returns nil."
-  (should (null (opencode-session--question-custom-p '((custom . :json-false))))))
-
-(ert-deftest test-opencode-handlers/question-custom-p-nil ()
-  "Nil custom returns nil."
-  (should (null (opencode-session--question-custom-p '((custom . nil))))))
-
-(ert-deftest test-opencode-handlers/question-prompt-label ()
-  "Build question prompt."
-  (should (equal (opencode-session--question-prompt-label
-                  '((header . "Auth") (question . "Enter key")))
-                 "OpenCode Auth: Enter key ")))
-
-(ert-deftest test-opencode-handlers/question-prompt-label-no-header ()
-  "Build question prompt without header."
-  (should (equal (opencode-session--question-prompt-label
-                  '((question . "Choose one")))
-                 "OpenCode: Choose one ")))
-
 ;;; event-file-paths (V2 envelope)
 
 (ert-deftest test-opencode-handlers/event-file-paths-vector ()
@@ -361,22 +313,6 @@ reply must go to the originating connection."
                     (action . "read"))))
          (list :connection connection))))
     (should (equal reply "reject"))))
-
-(ert-deftest test-opencode-handlers/user-quit-still-rejects-question ()
-  "Quitting a deferred question prompt still calls the rejection endpoint."
-  (let ((opencode-session--pending-prompts (make-hash-table :test #'eq))
-        (connection 'conn)
-        (rejected nil))
-    (cl-letf (((symbol-function 'opencode-session--question-answers)
-               (lambda (&rest _args) (signal 'quit nil)))
-              ((symbol-function 'opencode-client-question-reject)
-               (lambda (&rest _args)
-                 (setq rejected t))))
-      (let ((state (opencode-session--register-prompt connection "que_quit")))
-        (opencode-session--prompt-question
-         '((id . "que_quit") (questions . []))
-         connection state)))
-    (should rejected)))
 
 ;;; User inbox
 

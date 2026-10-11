@@ -6,6 +6,9 @@ OpenCode server for a project, opens sessions in dedicated Emacs buffers, sends
 prompts and commands over HTTP, and reflects server events back into the buffer
 as a streaming conversation log.
 
+It targets the OpenCode V2 API: HTTP endpoints live under =/api=, and the SSE
+stream delivers =data=-enveloped events (see [[Streaming And Event Routing]]).
+
 OpenCode remains the authority for sessions, messages, tools, providers, and
 agent behavior. The Emacs side is a thin orchestration and presentation layer:
 it owns process lifecycle, request dispatch, event routing, rendering, and the
@@ -94,7 +97,8 @@ SSE is the primary mechanism for keeping buffers current after a request is
 queued. The preferred streaming backend parses and filters events outside Emacs,
 while the fallback backend parses the stream in Emacs. Both paths share the same
 event registry and avoid parsing or retaining events that have no registered
-handler.
+handler. V2 events arrive as an envelope of the form ={id, created, type,
+location, data, durable}=; handlers read the payload from the =data= field.
 
 Handlers receive the originating connection as metadata. That matters when more
 than one OpenCode server is running: permission replies, form replies, and
