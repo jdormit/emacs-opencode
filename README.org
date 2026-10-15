@@ -146,6 +146,7 @@ All commands auto-detect the current project root. Use a prefix argument
 |-------------+----------------------------------------|
 | =C-c C-c=   | Send input                             |
 | =C-c C-k=   | Interrupt active prompt                |
+| =C-c C-b=   | Background running shells/subagents    |
 | =C-c C-a=   | Select agent                           |
 | =C-c C-n=   | Next agent                             |
 | =C-c C-p=   | Previous agent                         |

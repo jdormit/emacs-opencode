@@ -59,6 +59,7 @@ Each function receives SESSION and INPUT as arguments.")
     (define-key map (kbd "C-c C-p") #'opencode-session-previous-agent)
     (define-key map (kbd "C-c C-r") #'opencode-session-refresh-agents)
     (define-key map (kbd "C-c C-k") #'opencode-session-interrupt)
+    (define-key map (kbd "C-c C-b") #'opencode-session-background)
     (define-key map (kbd "C-c C-l") #'opencode-session-select-model)
     (define-key map (kbd "C-c C-v") #'opencode-session-select-variant)
     (define-key map (kbd "C-c C-]") #'opencode-session-next-variant)
@@ -421,6 +422,30 @@ message, fork the whole session."
                          (message "OpenCode: interrupt requested"))
               :error (lambda (&rest _args)
                        (message "OpenCode: failed to interrupt session"))))))))))
+
+(defun opencode-session-background ()
+  "Background the current session's running shell and subagent calls.
+
+Does nothing in a subagent session, because its running work
+belongs to the parent session."
+  (interactive)
+  (unless opencode-session--session
+    (error "OpenCode session is not connected"))
+  (let ((session-id (opencode-session-id opencode-session--session)))
+    (unless session-id
+      (error "OpenCode session ID is missing"))
+    (if (or (alist-get 'parentID (opencode-session-info opencode-session--session))
+            (opencode-session--subagent-parent session-id))
+        (message "OpenCode: background running work from the parent session instead")
+      (opencode-session--ensure-connection
+       (lambda (connection)
+         (opencode-client-session-background
+          connection
+          session-id
+          :success (lambda (&rest _args)
+                     (message "OpenCode: background requested"))
+          :error (lambda (&rest _args)
+                   (message "OpenCode: failed to move work to the background"))))))))
 
 ;;; Input area management
 

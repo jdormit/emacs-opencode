@@ -333,6 +333,14 @@ last `request' call made during BODY."
       (should (equal url "http://127.0.0.1:4096/api/session/ses_1/interrupt"))
       (should (equal (plist-get args :type) "POST")))))
 
+(ert-deftest test-opencode-client/session-background ()
+  "Backgrounding posts to the background endpoint."
+  (let ((conn (opencode-client-test--connection "/tmp/project/")))
+    (opencode-client-test--with-captured-request url args
+      (opencode-client-session-background conn "ses_1")
+      (should (equal url "http://127.0.0.1:4096/api/session/ses_1/background"))
+      (should (equal (plist-get args :type) "POST")))))
+
 ;;; permissions and forms
 
 (ert-deftest test-opencode-client/permission-reply-sends-decision ()

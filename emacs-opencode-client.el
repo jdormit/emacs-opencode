@@ -401,6 +401,16 @@ them."
    :success success
    :error error))
 
+(cl-defmethod opencode-client-session-background ((conn opencode-connection) session-id &key success error)
+  "Move blocking shell and subagent tool calls in SESSION-ID to the background."
+  (opencode-request
+   conn
+   'POST
+   (opencode-client--path "/api/session/%s/background" session-id)
+   :parser #'opencode-client--no-content
+   :success success
+   :error error))
+
 (cl-defmethod opencode-client-session-wait ((conn opencode-connection) session-id &key success error)
   "Wait until SESSION-ID becomes idle."
   (opencode-request

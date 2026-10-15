@@ -260,6 +260,45 @@
       (should (eq sent-connection 'conn))
       (should (equal sent-session "s1")))))
 
+;;; background command
+
+(ert-deftest test-opencode-session-mode/background-sends-session ()
+  "The background command moves blocking work for the current session."
+  (with-temp-buffer
+    (opencode-session-mode)
+    (setq-local opencode-session--session
+                (opencode-session-create :id "s1" :info '((id . "s1"))))
+    (let (sent-session)
+      (cl-letf (((symbol-function 'opencode-session--ensure-connection)
+                 (lambda (callback) (funcall callback 'conn)))
+                ((symbol-function 'opencode-client-session-background)
+                 (lambda (_connection session-id &rest _args)
+                   (setq sent-session session-id))))
+        (opencode-session-background))
+      (should (equal sent-session "s1")))))
+
+(ert-deftest test-opencode-session-mode/background-noop-in-subagent ()
+  "The background command warns and does nothing in a subagent session."
+  (dolist (session (list (opencode-session-create
+                          :id "child" :info '((id . "child") (parentID . "parent")))
+                         (opencode-session-create :id "registered-child")))
+    (with-temp-buffer
+      (opencode-session-mode)
+      (setq-local opencode-session--session session)
+      (let ((opencode-session--subagent-parents (make-hash-table :test 'equal))
+            called warned)
+        (opencode-session--register-subagent "registered-child" "parent" "part")
+        (cl-letf (((symbol-function 'opencode-session--ensure-connection)
+                   (lambda (callback) (funcall callback 'conn)))
+                  ((symbol-function 'opencode-client-session-background)
+                   (lambda (&rest _args) (setq called t)))
+                  ((symbol-function 'message)
+                   (lambda (format &rest args)
+                     (setq warned (apply #'format-message format args)))))
+          (opencode-session-background))
+        (should-not called)
+        (should (string-match-p "parent session" warned))))))
+
 ;;; rename command
 
 (ert-deftest test-opencode-session-mode/rename-updates-session-and-buffer-name ()
