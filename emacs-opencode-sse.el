@@ -7,14 +7,32 @@
 (require 'emacs-opencode-sse-profile)
 
 (defun opencode--json-read ()
-  "Read JSON from the current buffer with JSON false mapped to nil."
-  (if (fboundp 'json-parse-buffer)
-      (json-parse-buffer :object-type 'alist
-                         :array-type 'list
-                         :null-object nil
-                         :false-object nil)
-    (let ((json-false nil))
-      (json-read))))
+  "Read JSON, preserving JSON types in nested Code Mode call arguments."
+  (opencode--json-value
+   (json-parse-buffer :object-type 'hash-table :array-type 'array
+                      :null-object nil :false-object :json-false)))
+
+(defun opencode--json-value (value &optional input calls)
+  "Convert VALUE to alists and lists.
+Within CALLS metadata, preserve JSON types in each call's INPUT."
+  (cond
+   ((eq value :json-false) (and input :json-false))
+   ((hash-table-p value)
+    (if (and input (zerop (hash-table-count value)))
+        value
+      (let (items)
+        (maphash (lambda (key item)
+                   (push (cons (intern key)
+                               (opencode--json-value
+                                item (or input (and calls (equal key "input")))
+                                (or calls (equal key "toolCalls"))))
+                         items))
+                 value)
+        (nreverse items))))
+   ((vectorp value)
+    (let ((items (mapcar (lambda (item) (opencode--json-value item input calls)) value)))
+      (if input (vconcat items) items)))
+   (t value)))
 
 (defgroup emacs-opencode nil
   "Emacs client for the OpenCode server."
@@ -95,7 +113,11 @@ META currently carries `:connection' (the originating connection)."
 META is a plist of event metadata.  It carries `:connection', the
 connection on which the event arrived, so handlers can route
 responses back to the correct OpenCode server."
-  (let ((handlers (alist-get event opencode-sse--handlers nil nil #'string=)))
+  (let ((handlers (alist-get event opencode-sse--handlers nil nil #'string=))
+        (default-directory
+         (if-let* ((directory (alist-get 'directory (alist-get 'location data))))
+             (file-name-as-directory directory)
+           default-directory)))
     (dolist (handler handlers)
       ;; One failing handler must not drop the rest of the stream's events.
       (condition-case-unless-debug err
@@ -158,7 +180,7 @@ Signals an error when DATA is not valid JSON."
   (let ((url (opencode-sse--build-url connection))
         (auth (opencode-sse--auth-header connection)))
     (append
-     (list opencode-sse-curl-command "-N" "-s" "-S")
+     (list opencode-sse-curl-command "-N" "-s" "-S" "--fail")
      (when auth (list "-H" auth))
      (list url))))
 
@@ -399,10 +421,17 @@ Does nothing when the stream was closed on purpose or the server is gone."
   (setf (opencode-connection-sse-retry-timer connection) nil)
   (when (and (eq (opencode-connection-sse-process connection) process)
              (opencode-connection-alive-p connection))
-    (let ((attempts (opencode-connection-sse-retry-count connection)))
-      (opencode-sse-close connection)
-      (setf (opencode-connection-sse-retry-count connection) attempts)
-      (opencode-sse-open connection))))
+    (opencode-connection-start
+     connection
+     (lambda (_connection)
+       (when (eq (opencode-connection-sse-process connection) process)
+         (let ((attempts (opencode-connection-sse-retry-count connection)))
+           (opencode-sse-close connection)
+           (setf (opencode-connection-sse-retry-count connection) attempts)
+           (opencode-sse-open connection))))
+     (lambda (error-message)
+       (message "OpenCode: %s" error-message)
+       (opencode-sse--handle-exit connection process)))))
 
 ;;; Bridge backend
 ;; A JS process (bun or node) that connects to the SSE endpoint, parses
@@ -462,17 +491,9 @@ Respects `opencode-sse-backend' and falls back based on availability."
   "Parse a single JSON LINE from the bridge into an alist.
 Returns the parsed alist, or nil on parse failure."
   (condition-case nil
-      (if (fboundp 'json-parse-string)
-          (json-parse-string line
-                             :object-type 'alist
-                             :array-type 'list
-                             :null-object nil
-                             :false-object nil)
-        (with-temp-buffer
-          (insert line)
-          (goto-char (point-min))
-          (let ((json-false nil))
-            (json-read))))
+      (opencode--json-value
+       (json-parse-string line :object-type 'hash-table :array-type 'array
+                          :null-object nil :false-object :json-false))
     (error nil)))
 
 (defun opencode-sse--initialize-bridge-state (connection)

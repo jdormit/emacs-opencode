@@ -3,6 +3,8 @@
 ;; Load all test modules so `ert-run-tests-batch-and-exit' finds them.
 
 (require 'ert)
+(require 'emacs-opencode-service-test)
+(require 'emacs-opencode-codemode-test)
 
 (require 'emacs-opencode-test)
 (require 'emacs-opencode-connection-test)

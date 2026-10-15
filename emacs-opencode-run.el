@@ -12,12 +12,12 @@
 
 ARGS is a plist supporting :MODEL, :AGENT, and :DANGEROUSLY-SKIP-PERMISSIONS,
 each mapping to the corresponding CLI flag.  Flags with nil values are
-omitted.  The run uses a private server so it leaves nothing running when
-it exits.  PROMPT is appended last as the message."
+omitted.  The run uses the shared service.
+PROMPT is appended last as the message."
   (let ((model (plist-get args :model))
         (agent (plist-get args :agent))
         (skip (plist-get args :dangerously-skip-permissions))
-        (result (list "run" "--standalone")))
+        (result (list "run")))
     (when model
       (setq result (append result (list "--model" model))))
     (when agent

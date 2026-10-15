@@ -1,6 +1,6 @@
 #+TITLE: emacs-opencode
 
-An Emacs client for [[https://opencode.ai][OpenCode]]. Start servers, open sessions, chat, stream
+An Emacs client for [[https://opencode.ai][OpenCode 2]]. Open sessions, chat, stream
 responses, and manage agents — all from native Emacs buffers.
 
 *Note:* This project is a work-in-progress. It is ready for daily use but does
@@ -15,7 +15,7 @@ https://github.com/user-attachments/assets/5882e485-cec4-40f0-ab4f-d668533f2b33
 Requirements:
 - Emacs 29+
 - OpenCode 2 (the =opencode= CLI) on your =$PATH= ([[https://opencode.ai/v2/docs/][install docs]]). OpenCode
-  1 servers use an older API that this client no longer speaks.
+  1 users should use the =v1= tag (see below).
 - The Emacs package =request=
 - =bun= or =node= recommended for performant SSE streaming; =curl= is used as a fallback
 
@@ -45,9 +45,32 @@ command.
 For a one-shot prompt without opening a session buffer first, use
 =M-x opencode-ask=.
 
+Emacs discovers the shared background service from
+=$XDG_STATE_HOME/opencode/service.json= (default
+=~/.local/state/opencode/service.json=), checks =/api/info=, and authenticates
+with the registered password. If needed, it runs =opencode service start=,
+which applies your service configuration. All projects use one connection
+and one event stream; sessions and catalogs remain directory-scoped.
+
+=M-x opencode-disconnect= closes Emacs's connection without stopping the
+service or other clients. Opening or sending to a session reconnects. To stop
+or restart the shared service for every client, use =opencode service stop=
+or =opencode service restart= in a terminal. Emacs rediscovers the registration
+on stream reconnect, including changed addresses and credentials.
+
 To return to an existing session, use =M-x opencode-open-session=. To send a
 prompt to an existing session from another buffer, use =M-x
 opencode-send-to-session= or =M-x opencode-send-context-to-session=.
+
+* Using OpenCode 1.x
+
+The =v1= git tag is the last version compatible with OpenCode 1.x. Check it
+out with =git checkout v1=, or pin your straight.el recipe:
+
+#+begin_src emacs-lisp
+(use-package emacs-opencode
+  :straight (:type git :host github :repo "jdormit/emacs-opencode" :branch "v1"))
+#+end_src
 
 * Session Features
 
@@ -69,7 +92,11 @@ They support:
 - Tool output drawers: each completed tool call ends with a =▸= indicator.
   Press =TAB= or click the tool line to open the drawer and show the full
   output; press again to close it. Drawers start closed. Output for live tool
-  calls is fetched from the server the first time you open the drawer.
+   calls is fetched from the server the first time you open the drawer.
+- Code Mode: =execute= shows nested calls in start order, including their
+  arguments and running/completed/error status, live and after reloading.
+  Its output drawer shows the script's returned result. OpenCode 2.0.29
+  does not expose individual nested-call results in =metadata.toolCalls=.
 - Subagent navigation: press =RET= or click on a task/subagent block to open
   its child session. =TAB= shows the subagent's final result instead.
 - Reasoning/thinking blocks are hidden by default and can be toggled per buffer
@@ -105,8 +132,10 @@ include the 10 lines around point plus file and line metadata when available.
 | =opencode-send-to-session=         | Send a prompt to an existing session        |
 | =opencode-send-context-to-session= | Send prompt + context to an existing session |
 | =opencode-mcp-status=              | Show current OpenCode MCP server status     |
-| =opencode-shutdown=                | Stop server for a directory                 |
-| =opencode-shutdown-all=            | Stop all servers                            |
+| =opencode-disconnect=              | Disconnect Emacs; keep the shared service running |
+
+=opencode-shutdown= and =opencode-shutdown-all= are compatibility names for
+disconnecting from the shared service.
 
 All commands auto-detect the current project root. Use a prefix argument
 (=C-u=) to choose a directory manually.
@@ -164,11 +193,11 @@ The keyword arguments map to the corresponding =opencode run= CLI flags:
 | =:agent=                         | =--agent=                         |
 | =:dangerously-skip-permissions=  | =--auto=                          |
 
-Each run starts a private server (=--standalone=) that exits with the command,
-rather than OpenCode's shared background service.
+Each run uses OpenCode's shared background service, and its session remains
+available to other clients after the command exits.
 
 =:command= runs a slash command, with =PROMPT= as its arguments. The OpenCode
-2 CLI cannot run commands, so this starts or reuses the session server for
+2 CLI cannot run commands, so this connects to the shared service for
 =default-directory=, runs the command in a new session there, and passes the
 command's final reply to =CALLBACK=.
 
@@ -191,10 +220,6 @@ Options and faces are in the =emacs-opencode= customize group. Common options:
 | Variable                                 | Default           | Description                              |
 |------------------------------------------+-------------------+------------------------------------------|
 | =opencode-server-command=                | ="opencode"=      | Executable name or path                  |
-| =opencode-server-host=                   | ="127.0.0.1"=     | Server bind address                      |
-| =opencode-server-port=                   | =4096=            | Server port (auto-picks a free port if busy) |
-| =opencode-server-environment=            | =nil=             | Alist of env vars for server processes   |
-| =opencode-ready-timeout=                 | =5=               | Seconds to wait for server startup       |
 | =opencode-session-list-limit=            | =1000=            | Max sessions requested for completion    |
 | =opencode-session-default-agent=         | ="plan"=          | Default agent for new sessions           |
 | =opencode-session-default-variant=       | =nil=             | Default model variant                    |
@@ -243,13 +268,13 @@ Two useful starting points:
 Configure either approach however you prefer, then point OpenCode at an
 Emacs-specific instruction file so the agent knows those tools are available.
 
-** Emacs-specific OpenCode Config
+** OpenCode Instructions
 
-Create a dedicated config file (e.g. =~/.config/opencode/opencode.emacs.jsonc=)
-that loads instructions telling the agent it's running inside Emacs:
+Your OpenCode config can load instructions describing the available Emacs
+tools. With a shared service, this configuration applies to other clients too:
 
 #+begin_src jsonc
-// ~/.config/opencode/opencode.emacs.jsonc
+// ~/.config/opencode/opencode.jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "instructions": [
@@ -268,7 +293,7 @@ And the instructions file:
 <!-- ~/.config/opencode/instructions/emacs.md -->
 # Emacs Session Instructions
 
-You are running inside Emacs. You have access to the Emacs environment via
+You have access to the Emacs environment via
 the available Emacs integration tools, such as MCP tools or emacsclient. Use
 them whenever it would be best for the task at hand, e.g. reading buffers,
 evaluating elisp, fetching diagnostics, or running user-facing shell commands
@@ -277,20 +302,17 @@ evaluating elisp, fetching diagnostics, or running user-facing shell commands
 
 ** Wiring It Together
 
-Use =opencode-server-environment= to point the server process at the
-Emacs-specific config and pass any secrets that MCP servers or tools need:
+Configure service-wide environment variables in
+=$XDG_CONFIG_HOME/opencode/service.json= (default
+=~/.config/opencode/service.json=), using its =env= object:
 
-#+begin_src emacs-lisp
-(use-package emacs-opencode
-  :straight (:type git :host github :repo "jdormit/emacs-opencode")
-  :commands (opencode opencode-open-session opencode-ask opencode-ask-contextual)
-  :custom
-  (opencode-server-environment
-   `(("OPENCODE_CONFIG" . ,(expand-file-name "~/.config/opencode/opencode.emacs.jsonc"))
-      ;; Pass any additional env vars your MCP servers need:
-      ("TAVILY_API_KEY" . "..."))))
+#+begin_src json
+{
+  "env": {
+    "TAVILY_API_KEY": "..."
+  }
+}
 #+end_src
 
-With this setup, every OpenCode server started from Emacs will load the
-Emacs-specific config and instructions. The agent will know it's running inside
-Emacs and can use whichever Emacs integration tools you configured.
+Restart an already-running service after changing its environment. Emacs no
+longer supplies a per-directory server environment.

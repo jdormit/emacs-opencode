@@ -2,6 +2,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'json)
 
 (declare-function opencode-client-commands "emacs-opencode-client" (conn &rest args))
 (declare-function opencode-client-models "emacs-opencode-client" (conn &rest args))
@@ -23,6 +24,13 @@
   integrations
   models-state
   project-id
+  registration
+  connected
+  waiters
+  contexts
+  service
+  shared
+  (generation 0)
   process
   sse-process
   sse-state
@@ -33,143 +41,53 @@
   sse-retry-count)
 
 
-(defcustom opencode-server-host "127.0.0.1"
-  "Default hostname for OpenCode servers."
-  :type 'string
-  :group 'emacs-opencode)
-
-(defcustom opencode-server-port 4096
-  "Default port for OpenCode servers."
-  :type 'integer
-  :group 'emacs-opencode)
-
 (defcustom opencode-server-command "opencode"
   "OpenCode executable or command."
   :type 'string
   :group 'emacs-opencode)
 
-(defcustom opencode-server-environment nil
-  "Environment variables for OpenCode server processes.
+(defun opencode-connection-registration-file ()
+  "Return the shared service registration file."
+  (expand-file-name "opencode/service.json"
+                    (or (getenv "XDG_STATE_HOME")
+                        (expand-file-name "~/.local/state"))))
 
-Each entry is a (NAME . VALUE) pair. NAME is a string. VALUE is a string or
-nil. When VALUE is nil, remove NAME from the server process environment.
-Otherwise, set NAME to VALUE (converted with `format')."
-  :type '(repeat (cons (string :tag "Name")
-                       (choice (string :tag "Value")
-                               (const :tag "Unset" nil))))
-  :group 'emacs-opencode)
+(defun opencode-connection--read-registration ()
+  "Read the service registration, or return nil if unavailable or invalid."
+  (condition-case nil
+      (with-temp-buffer
+        (insert-file-contents (opencode-connection-registration-file))
+        (let ((info (json-parse-buffer :object-type 'alist)))
+          (when (and (stringp (alist-get 'url info))
+                     (integerp (alist-get 'pid info))
+                     (> (alist-get 'pid info) 0)
+                     (or (null (alist-get 'password info))
+                         (stringp (alist-get 'password info))))
+            info)))
+    (error nil)))
 
-(defun opencode-connection--process-environment (environment)
-  "Return `process-environment' updated with ENVIRONMENT.
-
-ENVIRONMENT is an alist of (NAME . VALUE) pairs. NAME is a string. VALUE is a
-string or nil. When VALUE is nil, remove NAME from the environment. When VALUE
-is non-nil, set NAME to VALUE (converted with `format')."
-  (let ((updated (copy-sequence process-environment)))
-    (dolist (entry environment)
-      (let* ((name (car entry))
-             (value (cdr entry))
-             (prefix (and (stringp name) (concat name "="))))
-        (when prefix
-          (setq updated (cl-remove-if (lambda (item)
-                                        (string-prefix-p prefix item))
-                                      updated))
-          (when value
-            (push (format "%s=%s" name value) updated)))))
-    updated))
-
-(defun opencode-connection--port-available-p (hostname port)
-  "Return non-nil when PORT can be bound on HOSTNAME."
-  (when (and port (> port 0))
-    (condition-case nil
-        (let ((process (make-network-process
-                        :name "opencode-port-check"
-                        :server t
-                        :host hostname
-                        :service port
-                        :noquery t)))
-          (delete-process process)
-          t)
-      (file-error nil))))
-
-(defun opencode-connection--pick-random-port (hostname)
-  "Return a free TCP port bound on HOSTNAME."
-  (let ((process (make-network-process
-                  :name "opencode-port-random"
-                  :server t
-                  :host hostname
-                  :service 0
-                  :noquery t)))
-    (unwind-protect
-        (process-contact process :service)
-      (delete-process process))))
-
-(defun opencode-connection--base-url (hostname port)
-  "Build base URL for HOSTNAME and PORT."
-  (format "http://%s:%d" hostname port))
-
-(defun opencode-connection-create-for-directory (directory &optional hostname port)
-  "Create a connection object for DIRECTORY.
-
-HOSTNAME and PORT override the default server config."
-  (let* ((resolved-host (or hostname opencode-server-host))
-         (resolved-port (or port
-                            (if (opencode-connection--port-available-p
-                                 resolved-host
-                                 opencode-server-port)
-                                opencode-server-port
-                              (opencode-connection--pick-random-port
-                               resolved-host)))))
-    (opencode-connection-create
-     :base-url (opencode-connection--base-url resolved-host resolved-port)
-     :hostname resolved-host
-     :port resolved-port
-     :directory (file-name-as-directory (expand-file-name directory))
-     :timeout 10)))
-
-(defun opencode-connection--environment-password (environment)
-  "Return the server password set in ENVIRONMENT, if any.
-
-ENVIRONMENT has the shape of `opencode-server-environment'."
-  (or (cdr (assoc "OPENCODE_PASSWORD" environment))
-      (cdr (assoc "OPENCODE_SERVER_PASSWORD" environment))))
-
-(defun opencode-connection--generate-password ()
-  "Return a random password for a new server."
-  (let ((bytes (with-temp-buffer
-                 (set-buffer-multibyte nil)
-                 (condition-case nil
-                     (insert-file-contents-literally "/dev/urandom" nil 0 32)
-                   (file-error
-                    (dotimes (_ 32) (insert (random 256)))))
-                 (buffer-string))))
-    (base64url-encode-string bytes t)))
-
-(defun opencode-connection--server-environment (password)
-  "Return the server environment with PASSWORD set as its password.
-An explicit value overrides any password inherited from Emacs."
-  (opencode-connection--process-environment
-   (append opencode-server-environment
-           `(("OPENCODE_PASSWORD" . ,password)))))
-
-(defun opencode-connection--maybe-ready (process output connection ready-callback)
-  "Process OUTPUT and call READY-CALLBACK when server is ready."
-  (when (and ready-callback
-             (not (process-get process 'opencode-ready)))
-    (let ((seen (concat (process-get process 'opencode-output) output)))
-      (process-put process 'opencode-output seen)
-      (when (string-match-p "server listening on" seen)
-        (process-put process 'opencode-ready t)
-        (process-put process 'opencode-output nil)
-        (funcall ready-callback process)
-        (opencode-connection-ensure-models connection)
-        (opencode-connection-ensure-commands connection)))))
+(defun opencode-connection-context (connection)
+  "Return the directory-local catalog cache for CONNECTION.
+The shared transport has no directory; callers route through
+`default-directory'.  Explicit directory connections are useful in tests."
+  (if (not (opencode-connection-shared connection))
+      connection
+    (unless (opencode-connection-contexts connection)
+      (setf (opencode-connection-contexts connection)
+            (make-hash-table :test 'equal)))
+    (let* ((directory (file-name-as-directory (file-truename default-directory)))
+           (contexts (opencode-connection-contexts connection)))
+      (or (gethash directory contexts)
+          (puthash directory (opencode-connection-create :directory directory
+                                                        :service connection)
+                   contexts)))))
 
 (defun opencode-connection-ensure-commands (connection &optional on-success on-error)
   "Ensure commands are fetched and cached for CONNECTION.
 
 ON-SUCCESS is called with ITEMS when available. ON-ERROR is called on failure."
   (require 'emacs-opencode-client)
+  (setq connection (opencode-connection-context connection))
   (pcase (opencode-connection-commands-state connection)
     (:loaded
      (when on-success (funcall on-success (opencode-connection-commands connection)))
@@ -198,6 +116,7 @@ ON-SUCCESS is called with ITEMS when available. ON-ERROR is called on failure."
 
 (defun opencode-connection-invalidate-commands (connection)
   "Drop the cached command list for CONNECTION."
+  (setq connection (opencode-connection-context connection))
   (setf (opencode-connection-commands connection) nil)
   (setf (opencode-connection-commands-state connection) nil))
 
@@ -209,6 +128,7 @@ catalog lists every provider that can be connected.  ON-SUCCESS is called
 with the model list once both are available.  ON-ERROR is called on
 failure."
   (require 'emacs-opencode-client)
+  (setq connection (opencode-connection-context connection))
   (pcase (opencode-connection-models-state connection)
     (:loaded
      (when on-success (funcall on-success (opencode-connection-models connection)))
@@ -255,53 +175,108 @@ failure."
 
 (defun opencode-connection-invalidate-models (connection)
   "Drop the cached model and integration catalogs for CONNECTION."
+  (setq connection (opencode-connection-context connection))
   (setf (opencode-connection-models connection) nil)
   (setf (opencode-connection-integrations connection) nil)
   (setf (opencode-connection-models-state connection) nil))
 
-(defun opencode-connection-start (connection &optional ready-callback)
-  "Start an OpenCode server for CONNECTION.
+(defun opencode-connection--discover (connection success failure)
+  "Discover a healthy service for CONNECTION, calling SUCCESS or FAILURE."
+  (require 'emacs-opencode-client)
+  (if-let* ((info (opencode-connection--read-registration)))
+      (let ((generation (opencode-connection-generation connection))
+            (probe (opencode-connection-create
+                    :base-url (alist-get 'url info) :timeout 2
+                    :username "opencode" :password (alist-get 'password info))))
+        (opencode-client-health
+         probe
+         :success
+         (lambda (&rest args)
+           (when (= generation (opencode-connection-generation connection))
+             (let ((data (plist-get args :data)))
+               (if (and (equal (alist-get 'pid data) (alist-get 'pid info))
+                        (stringp (alist-get 'version data)))
+                   (progn
+                     (unless (equal info (opencode-connection-registration connection))
+                       (when-let* ((contexts (opencode-connection-contexts connection)))
+                         (maphash (lambda (_directory cache)
+                                    (opencode-connection-invalidate-models cache)
+                                    (opencode-connection-invalidate-commands cache)
+                                    (setf (opencode-connection-agents cache) nil
+                                          (opencode-connection-agents-raw cache) nil))
+                                  contexts)))
+                     (setf (opencode-connection-registration connection) info
+                           (opencode-connection-base-url connection) (alist-get 'url info)
+                           (opencode-connection-username connection) "opencode"
+                           (opencode-connection-password connection) (alist-get 'password info))
+                     (funcall success connection))
+                 (funcall failure)))))
+         :error (lambda (&rest _)
+                  (when (= generation (opencode-connection-generation connection))
+                    (funcall failure)))))
+    (funcall failure)))
 
-READY-CALLBACK is called when the server reports readiness. Returns the
-updated CONNECTION."
-  (let* ((default-directory (opencode-connection-directory connection))
-          (hostname (opencode-connection-hostname connection))
-          (port (opencode-connection-port connection))
-          (password (or (opencode-connection--environment-password
-                         opencode-server-environment)
-                        (opencode-connection--generate-password)))
-          (process-environment (opencode-connection--server-environment password))
-          (command (list (executable-find opencode-server-command) "serve"
-                         "--hostname" hostname
-                         "--port" (number-to-string port)))
-         (buffer (get-buffer-create (format " *opencode-server<%s>*" default-directory)))
-         (process (apply #'start-process "opencode-server" buffer command)))
-    (setf (opencode-connection-username connection) "opencode")
-    (setf (opencode-connection-password connection) password)
-    (set-process-filter
-     process
-     (lambda (proc output)
-       (when (buffer-live-p buffer)
-         (with-current-buffer buffer
-           (goto-char (point-max))
-           (insert output)))
-       (opencode-connection--maybe-ready proc output connection ready-callback)))
-    (setf (opencode-connection-process connection) process)
-    connection))
+(defun opencode-connection-start (connection &optional ready-callback error-callback)
+  "Discover or start the shared service for CONNECTION.
+Call READY-CALLBACK with CONNECTION, or ERROR-CALLBACK with an error string.
+Concurrent callers share one startup operation."
+  (let ((waiting (opencode-connection-waiters connection)))
+    (push (cons ready-callback error-callback)
+          (opencode-connection-waiters connection))
+    (unless waiting
+      (cl-incf (opencode-connection-generation connection))
+      (cl-labels
+          ((finish (error-message)
+             (let ((callbacks (nreverse (opencode-connection-waiters connection))))
+               (setf (opencode-connection-waiters connection) nil
+                     (opencode-connection-connected connection)
+                     (or (opencode-connection-connected connection) (not error-message)))
+               (dolist (pair callbacks)
+                 (if error-message
+                     (if (cdr pair) (funcall (cdr pair) error-message)
+                       (message "OpenCode: %s" error-message))
+                   (when (car pair) (funcall (car pair) connection))))))
+           (ready (_connection) (finish nil))
+           (start ()
+             (let ((buffer (generate-new-buffer " *opencode-service-start*")))
+               (condition-case err
+                   (let ((process
+                         (make-process
+                          :name "opencode-service-start" :buffer buffer :noquery t
+                          :command (list opencode-server-command "service" "start")
+                          :sentinel
+                          (lambda (process _event)
+                            (when (memq (process-status process) '(exit signal))
+                              (setf (opencode-connection-process connection) nil)
+                              (unwind-protect
+                                  (if (zerop (process-exit-status process))
+                                      (opencode-connection--discover
+                                       connection #'ready
+                                       (lambda () (finish "Service registration is not healthy after startup")))
+                                    (finish (format "Service startup failed: %s"
+                                                    (with-current-buffer buffer
+                                                      (string-trim (buffer-string))))))
+                                (kill-buffer buffer)))))))
+                     (setf (opencode-connection-process connection) process))
+                 (error
+                  (kill-buffer buffer)
+                  (finish (error-message-string err)))))))
+        (opencode-connection--discover connection #'ready #'start))))
+  connection)
 
 (defun opencode-connection-alive-p (connection)
-  "Return non-nil if CONNECTION's server process is alive."
-  (when-let* ((process (opencode-connection-process connection)))
-    (process-live-p process)))
+  "Return non-nil when CONNECTION is attached to the shared service."
+  (opencode-connection-connected connection))
 
 (defun opencode-connection-stop (connection)
-  "Stop the OpenCode server associated with CONNECTION."
+  "Detach CONNECTION without stopping the shared service."
+  (cl-incf (opencode-connection-generation connection))
+  (setf (opencode-connection-connected connection) nil
+        (opencode-connection-waiters connection) nil)
   (when-let* ((process (opencode-connection-process connection)))
-    (when (process-live-p process)
-      (delete-process process))
-    (when-let* ((buffer (process-buffer process)))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))
+    (set-process-sentinel process #'ignore)
+    (when (process-live-p process) (delete-process process))
+    (when-let* ((buffer (process-buffer process))) (kill-buffer buffer))
     (setf (opencode-connection-process connection) nil)))
 
 

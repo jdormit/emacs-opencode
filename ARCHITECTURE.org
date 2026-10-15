@@ -1,14 +1,14 @@
 #+TITLE: Emacs OpenCode Architecture
 
 * Overview
-This package is an Emacs-native client for OpenCode. It starts or attaches to an
-OpenCode server for a project, opens sessions in dedicated Emacs buffers, sends
+This package is an Emacs-native client for OpenCode 2. It connects to the shared
+background service, opens sessions in dedicated Emacs buffers, sends
 prompts and commands over HTTP, and reflects server events back into the buffer
 as a streaming conversation log.
 
 OpenCode remains the authority for sessions, messages, tools, providers, and
 agent behavior. The Emacs side is a thin orchestration and presentation layer:
-it owns process lifecycle, request dispatch, event routing, rendering, and the
+it owns request dispatch, event routing, rendering, and the
 small amount of local state needed for an interactive editor UI.
 
 * Core Principles
@@ -23,28 +23,34 @@ small amount of local state needed for an interactive editor UI.
 - Small, intentional state: cache only what improves responsiveness or display.
 
 * Runtime Model
-An OpenCode connection represents one server process for one normalized project
-directory. Connections are registered and reused so commands in the same project
-share a server, caches, and event stream. If the configured port is unavailable,
-the client chooses another free port for that server.
+One connection and event stream serve every directory. Emacs reads the service
+registration from the XDG state directory and probes =/api/info= with Basic auth.
+If discovery fails, =opencode service start= applies the user's service config
+and starts the service. Disconnecting Emacs leaves the service running.
+
+Directory-local catalog contexts reuse the connection struct as cache containers;
+their =service= slot points to the shared transport. They own no processes.
+Requests use =default-directory= (or an explicit context's directory), and their
+callbacks retain that directory. Session buffers set =default-directory= from
+their session's API location.
 
 Most interactive commands follow the same shape:
 
 1. Resolve a project directory.
-2. Start or reuse the directory's connection.
+2. Discover or reuse the shared service connection.
 3. Make an HTTP request to create, select, or update a session.
 4. Open or reuse a session buffer.
 5. Let the SSE stream drive subsequent UI updates.
 
 There is also a separate one-shot path for running an OpenCode prompt as a CLI
-process. That path does not create a session buffer and is intentionally outside
-the server-backed session lifecycle.
+process. It also uses the shared service and leaves its session available after
+the CLI exits, without creating an Emacs session buffer.
 
 * Layers
 - Entry commands choose directories, manage connection reuse, create or select
   sessions, and bridge interactive commands into the lower layers.
-- Connection lifecycle owns server process startup, port selection, readiness,
-  health checks, environment variables, shutdown, and connection-scoped caches.
+- Connection lifecycle owns registration discovery, health checks, CLI-managed
+  startup, detachment, and directory-local catalog caches.
 - HTTP client wrappers centralize request construction, JSON encoding, parsing,
   auth, timeouts, and directory routing headers.
 - Streaming transport owns the SSE subprocess, event filtering, parsing, and
@@ -63,12 +69,13 @@ the server-backed session lifecycle.
 | Owner           | State                                                        |
 |-----------------+--------------------------------------------------------------|
 | OpenCode server | Authoritative sessions, messages, tools, providers, agents   |
-| Connection      | Server process, base URL, directory, SSE process, caches     |
+| Connection      | Service registration, base URL, credentials, SSE process    |
+| Catalog context | Directory, agents, commands, models, integrations           |
 | Session buffer  | Current session, messages, status, input, selected model data |
-| Global registry | Directory->connection and session->buffer lookup tables      |
+| Global registry | Shared connection and session->buffer lookup table          |
 | Rendered text   | Markers, text properties, overlays, and invisibility state    |
 
-Connection caches are shared across buffers attached to the same server. Active
+Catalog caches are shared across buffers in the same directory. Active
 agent, model, and variant selections are buffer-local because each session can
 use different settings. Task/subagent tracking records which parent task tool
 created each child session, so events from a child session can update the task
@@ -106,15 +113,20 @@ loads read the server's projected messages and convert them into the same
 structs.
 
 The stream is lossy across disconnects: the server does not replay events a
-client missed. When a stream exits while its server is still running, the
-client reconnects with backoff. The server announces each new stream with
+client missed. When a stream exits, the client rediscovers the service and
+reconnects with backoff, picking up replaced PIDs, URLs, and passwords. The
+server announces each new stream with
 =server.connected=, and on a reconnect the client reloads the transcript, info,
 and busy state of every session buffer on that connection.
 
-Handlers receive the originating connection as metadata. That matters when more
-than one OpenCode server is running: permission replies, question replies, and
-subagent updates must be routed back to the server that produced the event, not
-to an arbitrary live buffer.
+Handlers receive the shared connection as metadata and run in the event's
+directory context. Events from directories Emacs has not opened are ignored.
+Permission and form recovery queries run once per known directory.
+
+Code Mode's =metadata.toolCalls= already survives live event and history
+projection. The renderer displays its ordered names, arguments, and statuses
+under =execute=; the existing output drawer displays the script's returned
+result. The protocol does not provide results for individual nested calls.
 
 Event handlers should do as little as possible: normalize payloads, find the
 right buffer or connection, update local state, and trigger the smallest useful

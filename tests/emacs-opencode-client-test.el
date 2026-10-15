@@ -68,12 +68,14 @@ last `request' call made during BODY."
       (delete-file link)
       (delete-directory target))))
 
-(ert-deftest test-opencode-client/request-no-directory-header-without-directory ()
-  "No directory header when the connection has no directory."
+(ert-deftest test-opencode-client/request-directory-from-calling-context ()
+  "The shared connection routes requests using the calling directory."
   (let ((conn (opencode-client-test--connection nil)))
     (opencode-client-test--with-captured-request _url args
       (opencode-request conn 'GET "/api/agent")
-      (should-not (assoc "x-opencode-directory" (plist-get args :headers))))))
+      (should (equal (cdr (assoc "x-opencode-directory" (plist-get args :headers)))
+                     (url-hexify-string (directory-file-name
+                                         (file-truename default-directory))))))))
 
 (ert-deftest test-opencode-client/request-directory-header-with-json ()
   "Directory header coexists with the JSON content type header."

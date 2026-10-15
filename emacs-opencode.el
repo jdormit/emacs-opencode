@@ -13,11 +13,6 @@
   "Emacs client for the OpenCode server."
   :group 'applications)
 
-(defcustom opencode-ready-timeout 5
-  "Seconds to wait for OpenCode server readiness."
-  :type 'number
-  :group 'emacs-opencode)
-
 (defcustom opencode-session-list-limit 1000
   "Maximum number of sessions to request when listing sessions.
 The OpenCode server returns 50 sessions by default; this option raises
@@ -27,8 +22,8 @@ uses the server default."
   :group 'emacs-opencode)
 
 
-(defvar opencode--connections (make-hash-table :test 'equal)
-  "Registry mapping directories to OpenCode connections.")
+(defvar opencode--service-connection nil
+  "The shared OpenCode service connection.")
 
 (defvar opencode--prompt-history nil
   "History list for OpenCode prompts.")
@@ -36,40 +31,6 @@ uses the server default."
 (defun opencode--normalize-directory (directory)
   "Normalize DIRECTORY for registry lookups."
   (file-name-as-directory (expand-file-name directory)))
-
-(defun opencode--get-connection (directory)
-  "Return the OpenCode connection for DIRECTORY, if any."
-  (gethash (opencode--normalize-directory directory) opencode--connections))
-
-(defun opencode--register-connection (directory connection)
-  "Register CONNECTION for DIRECTORY."
-  (puthash (opencode--normalize-directory directory) connection opencode--connections))
-
-(defun opencode--unregister-connection (directory)
-  "Remove any registered connection for DIRECTORY."
-  (remhash (opencode--normalize-directory directory) opencode--connections))
-
-(defun opencode--registered-directories ()
-  "Return a list of registered connection directories."
-  (let (directories)
-    (maphash (lambda (key _value)
-               (push key directories))
-             opencode--connections)
-    (sort directories #'string<)))
-
-(defun opencode--check-health (connection on-success on-error)
-  "Check CONNECTION health once using callbacks.
-
-ON-SUCCESS and ON-ERROR are called with request args." 
-  (opencode-client-health
-   connection
-   :success on-success
-   :error on-error))
-
-(defun opencode--ready-timeout (_directory connection)
-  "Stop CONNECTION after its server failed to become ready in time."
-  (opencode-connection-stop connection)
-  (error "OpenCode server did not become ready within %ss" opencode-ready-timeout))
 
 (defun opencode--session-from-data (data)
   "Create a session object from server session DATA."
@@ -230,88 +191,49 @@ and skip prompting unless a prefix arg is supplied."
         (read-directory-name prompt default-directory nil t))))
 
 ;;;###autoload
-(defun opencode-shutdown (directory)
-  "Stop OpenCode server for DIRECTORY and remove it from the registry."
-  (interactive
-   (list
-    (completing-read
-     "Shutdown OpenCode for directory: "
-     (opencode--registered-directories)
-     nil
-     t)))
-  (let* ((normalized (opencode--normalize-directory directory))
-         (connection (opencode--get-connection normalized)))
-    (unless connection
-      (error "No OpenCode connection registered for %s" normalized))
-    (opencode-sse-close connection)
-    (opencode-connection-stop connection)
-    (opencode--unregister-connection normalized)
-    (message "Stopped OpenCode server for %s" normalized)))
+(defun opencode-disconnect ()
+  "Disconnect Emacs from OpenCode, leaving the shared service running."
+  (interactive)
+  (when opencode--service-connection
+    (opencode-sse-close opencode--service-connection)
+    (opencode-connection-stop opencode--service-connection))
+  (message "Disconnected from OpenCode"))
 
 ;;;###autoload
-(defun opencode-shutdown-all ()
-  "Stop all registered OpenCode servers and clear the registry."
+(defun opencode-shutdown (&optional _directory)
+  "Disconnect Emacs from the shared OpenCode service.
+The obsolete DIRECTORY argument is ignored."
   (interactive)
-  (let ((directories (opencode--registered-directories)))
-    (dolist (directory directories)
-      (let ((connection (opencode--get-connection directory)))
-        (when connection
-          (opencode-sse-close connection)
-          (opencode-connection-stop connection)
-          (opencode--unregister-connection directory)))))
-  (message "Stopped all OpenCode servers"))
+  (opencode-disconnect))
+
+(defalias 'opencode-shutdown-all #'opencode-disconnect)
 
 ;;;###autoload
 (defun opencode-run-server (directory &optional on-ready)
-  "Start or reuse an OpenCode server for DIRECTORY.
-
-When a connection already exists for DIRECTORY, reuse it without restarting
-its server process. When ON-READY is non-nil, call it with the connection
-once the server is ready."
+  "Connect to the shared OpenCode service for DIRECTORY.
+Call ON-READY with the connection in DIRECTORY's context when healthy.
+All directories share one connection and event stream."
   (interactive (list (opencode--read-directory "OpenCode directory: ")))
-  (let* ((normalized (opencode--normalize-directory directory))
-         (existing (opencode--get-connection normalized)))
-    (if (and existing (opencode-connection-alive-p existing))
-        (let ((process (opencode-connection-process existing)))
-          (cond
-           ((null on-ready))
-           ((process-get process 'opencode-healthy)
-            (funcall on-ready existing))
-           (t
-            ;; Still starting: run once the server answers requests.
-            (process-put process 'opencode-waiting
-                         (append (process-get process 'opencode-waiting)
-                                 (list on-ready)))))
-          (message "OpenCode already running for %s" normalized)
-          existing)
-      (when existing
-        (opencode-sse-close existing)
-        (opencode-connection-stop existing)
-        (opencode--unregister-connection normalized))
-      (let* ((connection (opencode-connection-create-for-directory normalized))
-             (timeout (run-at-time opencode-ready-timeout nil
-                                   #'opencode--ready-timeout normalized connection)))
-        (opencode-connection-start
-         connection
-         (lambda (_process)
-           (when (timerp timeout)
-             (cancel-timer timeout))
-           (opencode--check-health
-            connection
-            (lambda (&rest _args)
-              (let ((process (opencode-connection-process connection)))
-                (opencode--register-connection normalized connection)
-                (process-put process 'opencode-healthy t)
-                (message "Started OpenCode server for %s" normalized)
-                (dolist (callback (cons on-ready (process-get process 'opencode-waiting)))
-                  (when callback
-                    (funcall callback connection)))
-                (process-put process 'opencode-waiting nil)))
-            (lambda (&rest _args)
-              (error "OpenCode server failed to become healthy for %s" normalized)))
-           (opencode-sse-open connection)))
-        (opencode--register-connection normalized connection)
-        connection))))
+  (let ((directory (opencode--normalize-directory directory)))
+    (unless opencode--service-connection
+      (setq opencode--service-connection (opencode-connection-create :timeout 10 :shared t)))
+    (let* ((connection opencode--service-connection)
+           (ready (lambda (conn)
+                    (let ((default-directory directory))
+                      (let* ((contexts (opencode-connection-contexts conn))
+                             (known (and contexts
+                                         (gethash (file-name-as-directory (file-truename directory))
+                                                  contexts))))
+                        (opencode-connection-context conn)
+                        (when (and (not known) (opencode-connection-sse-connected conn))
+                          (opencode-session--prompt-pending-requests conn)))
+                      (unless (opencode-connection-sse-process conn)
+                        (opencode-sse-open conn))
+                      (when on-ready (funcall on-ready conn))))))
+      (if (opencode-connection-alive-p connection)
+          (funcall ready connection)
+        (opencode-connection-start connection ready))
+      connection)))
 
 (defun opencode--create-session (connection on-created)
   "Create a session on CONNECTION and call ON-CREATED with it.

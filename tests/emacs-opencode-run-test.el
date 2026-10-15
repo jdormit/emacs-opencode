@@ -8,34 +8,34 @@
 (ert-deftest test-opencode-run/build-args-bare ()
   "A bare prompt runs with a private server."
   (should (equal (opencode-run--build-args "the prompt")
-                 '("run" "--standalone" "the prompt"))))
+                 '("run" "the prompt"))))
 
 (ert-deftest test-opencode-run/build-args-model ()
   "The :model keyword adds a --model flag."
   (should (equal (opencode-run--build-args "the prompt" :model "anthropic/foo")
-                 '("run" "--standalone" "--model" "anthropic/foo" "the prompt"))))
+                 '("run" "--model" "anthropic/foo" "the prompt"))))
 
 (ert-deftest test-opencode-run/build-args-agent ()
   "The :agent keyword adds an --agent flag."
   (should (equal (opencode-run--build-args "the prompt" :agent "build")
-                 '("run" "--standalone" "--agent" "build" "the prompt"))))
+                 '("run" "--agent" "build" "the prompt"))))
 
 (ert-deftest test-opencode-run/build-args-skip-permissions ()
   "The :dangerously-skip-permissions keyword auto-approves permissions."
   (should (equal (opencode-run--build-args
                   "the prompt" :dangerously-skip-permissions t)
-                 '("run" "--standalone" "--auto" "the prompt"))))
+                 '("run" "--auto" "the prompt"))))
 
 (ert-deftest test-opencode-run/build-args-skip-permissions-nil ()
   "A nil :dangerously-skip-permissions omits the flag."
   (should (equal (opencode-run--build-args
                   "the prompt" :dangerously-skip-permissions nil)
-                 '("run" "--standalone" "the prompt"))))
+                 '("run" "the prompt"))))
 
 (ert-deftest test-opencode-run/build-args-nil-flags-omitted ()
   "Keyword flags with nil values are omitted."
   (should (equal (opencode-run--build-args "the prompt" :model nil :agent nil)
-                 '("run" "--standalone" "the prompt"))))
+                 '("run" "the prompt"))))
 
 (ert-deftest test-opencode-run/build-args-all-flags ()
   "All flags combine in a stable order before the prompt."
@@ -44,7 +44,7 @@
                   :model "anthropic/foo"
                   :agent "build"
                   :dangerously-skip-permissions t)
-                 '("run" "--standalone"
+                 '("run"
                    "--model" "anthropic/foo"
                    "--agent" "build"
                    "--auto"

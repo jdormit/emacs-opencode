@@ -97,12 +97,13 @@ Includes non-hidden agents that are not in primary mode (i.e., subagents)."
 
 (defun opencode-session--store-agents (connection data)
   "Cache agent list DATA on CONNECTION."
-  (setf (opencode-connection-agents connection) (opencode-session--normalize-agents data))
-  (setf (opencode-connection-agents-raw connection) (opencode-session--normalize-agent-data data)))
+  (let ((cache (opencode-connection-context connection)))
+    (setf (opencode-connection-agents cache) (opencode-session--normalize-agents data))
+    (setf (opencode-connection-agents-raw cache) (opencode-session--normalize-agent-data data))))
 
 (defun opencode-session--maybe-fetch-agents (connection)
   "Fetch and cache agents for CONNECTION when needed."
-  (unless (opencode-connection-agents connection)
+  (unless (opencode-connection-agents (opencode-connection-context connection))
     (let ((session-buffer (current-buffer)))
       (opencode-client-agents
        connection
@@ -120,7 +121,7 @@ A session without an agent runs the server's default, the first primary
 agent."
   (when (and (eq connection opencode-session--connection)
              (not opencode-session--agent))
-    (let ((agents (opencode-connection-agents connection))
+    (let ((agents (opencode-connection-agents (opencode-connection-context connection)))
           (session-agent (and opencode-session--session
                               (alist-get 'agent (opencode-session-info opencode-session--session)))))
       (when (and agents (listp agents))
@@ -133,16 +134,20 @@ agent."
   "Fetch CONNECTION's agents and call ON-READY with the primary names.
 A server answers with an empty list until it has loaded the directory's
 configuration, so retry briefly; ATTEMPT counts the tries so far."
-  (let ((attempt (or attempt 1)))
+  (let ((attempt (or attempt 1))
+        (directory default-directory))
     (opencode-client-agents
      connection
      :success (lambda (&rest args)
                 (let ((data (plist-get args :data)))
                   (if (and (null data) (< attempt opencode-session--agent-load-attempts))
-                      (run-at-time 0.25 nil #'opencode-session--load-agents
-                                   connection on-ready (1+ attempt))
+                      (run-at-time
+                       0.25 nil
+                       (lambda ()
+                         (let ((default-directory directory))
+                           (opencode-session--load-agents connection on-ready (1+ attempt)))))
                     (opencode-session--store-agents connection data)
-                    (funcall on-ready (opencode-connection-agents connection)))))
+                    (funcall on-ready (opencode-connection-agents (opencode-connection-context connection))))))
      :error (lambda (&rest _args)
               (funcall on-ready nil)))))
 
@@ -150,11 +155,11 @@ configuration, so retry briefly; ATTEMPT counts the tries so far."
   "Ensure agent list is available for CONNECTION.
 ON-READY, when non-nil, is called with the primary agent names once
 they are loaded."
-  (if (opencode-connection-agents connection)
+  (if (opencode-connection-agents (opencode-connection-context connection))
       (progn
         (opencode-session--apply-default-agent connection)
         (when on-ready
-          (funcall on-ready (opencode-connection-agents connection))))
+          (funcall on-ready (opencode-connection-agents (opencode-connection-context connection)))))
     (if on-ready
         (let ((buffer (current-buffer)))
           (opencode-session--load-agents
@@ -169,20 +174,20 @@ they are loaded."
 
 (defun opencode-session--refresh-agents (connection)
   "Refresh the cached agent list for CONNECTION."
-  (setf (opencode-connection-agents connection) nil)
-  (setf (opencode-connection-agents-raw connection) nil)
+  (setf (opencode-connection-agents (opencode-connection-context connection)) nil)
+  (setf (opencode-connection-agents-raw (opencode-connection-context connection)) nil)
   (opencode-session--maybe-fetch-agents connection))
 
 (defun opencode-session--available-agents ()
   "Return available agents for the current session buffer."
   (when opencode-session--connection
-    (opencode-connection-agents opencode-session--connection)))
+    (opencode-connection-agents (opencode-connection-context opencode-session--connection))))
 
 (defun opencode-session--available-completable-agents ()
   "Return agent names available for @-mention completion.
 These are non-hidden, non-primary agents (subagents)."
   (when opencode-session--connection
-    (let ((raw (opencode-connection-agents-raw opencode-session--connection)))
+    (let ((raw (opencode-connection-agents-raw (opencode-connection-context opencode-session--connection))))
       (when raw
         (opencode-session--completable-agent-names raw)))))
 
@@ -274,7 +279,7 @@ The session keeps the agent for subsequent turns."
 
 (defun opencode-session--ensure-providers (connection)
   "Ensure the model catalog is available for CONNECTION."
-  (when (and connection (null (opencode-connection-models-state connection)))
+  (when (and connection (null (opencode-connection-models-state (opencode-connection-context connection))))
     (opencode-connection-ensure-models
      connection
      (lambda (_models)
@@ -283,7 +288,7 @@ The session keeps the agent for subsequent turns."
 (defun opencode-session--model-list (&optional connection)
   "Return the cached model list for CONNECTION, or nil while loading."
   (let ((conn (or connection opencode-session--connection)))
-    (and conn (opencode-connection-models conn))))
+    (and conn (opencode-connection-models (opencode-connection-context conn)))))
 
 (defun opencode-session--provider-model-info (provider-id model-id &optional connection)
   "Return model metadata for PROVIDER-ID and MODEL-ID from CONNECTION."
@@ -311,7 +316,7 @@ models can be listed; those show MODEL-ID as a connect action."
 Each candidate is a plist with provider/model IDs and display text.
 Integrations with no connection are listed once so they can be connected."
   (let* ((conn (or connection opencode-session--connection))
-         (integrations (and conn (opencode-connection-integrations conn)))
+         (integrations (and conn (opencode-connection-integrations (opencode-connection-context conn))))
          (names (make-hash-table :test 'equal))
          entries)
     (dolist (integration integrations)
@@ -540,7 +545,7 @@ Choosing a provider that is not connected runs its sign-in flow first."
                 (with-current-buffer buffer
                   (let* ((integrations
                           (cl-remove-if-not #'opencode-session--usable-auth-methods
-                                            (opencode-connection-integrations connection)))
+                                            (opencode-connection-integrations (opencode-connection-context connection))))
                          (ids (mapcar (lambda (integration) (alist-get 'id integration))
                                       integrations))
                          (provider-id (completing-read "OpenCode provider: " ids nil t)))
@@ -691,7 +696,7 @@ no interaction."
 
 (defun opencode-session--find-integration (connection integration-id)
   "Return the cached integration INTEGRATION-ID on CONNECTION."
-  (cl-find integration-id (opencode-connection-integrations connection)
+  (cl-find integration-id (opencode-connection-integrations (opencode-connection-context connection))
            :key (lambda (integration) (alist-get 'id integration))
            :test #'equal))
 
@@ -800,25 +805,29 @@ CALLBACK is called on success."
   "Wait for browser OAuth ATTEMPT-ID for PROVIDER-ID on CONNECTION.
 CALLBACK is called once the attempt completes."
   (message "OpenCode: waiting for browser sign-in for %s..." provider-id)
-  (opencode-client-integration-oauth-status
-   connection provider-id attempt-id
-   :success (lambda (&rest args)
-              (let ((status (plist-get args :data)))
-                (pcase (alist-get 'status status)
-                  ("complete"
-                   (opencode-session--auth-connected connection provider-id callback))
-                  ("pending"
-                   (run-at-time opencode-session-oauth-poll-interval nil
-                                #'opencode-session--auth-oauth-poll
-                                connection provider-id attempt-id callback))
-                  (_
-                   (message "OpenCode: sign-in for %s %s%s" provider-id
-                            (or (alist-get 'status status) "failed")
-                            (if-let* ((text (alist-get 'message status)))
-                                (format ": %s" text)
-                              ""))))))
-   :error (lambda (&rest _args)
-            (message "OpenCode: sign-in failed for %s" provider-id))))
+  (let ((directory default-directory))
+    (opencode-client-integration-oauth-status
+     connection provider-id attempt-id
+     :success (lambda (&rest args)
+                (let ((status (plist-get args :data)))
+                  (pcase (alist-get 'status status)
+                    ("complete"
+                     (opencode-session--auth-connected connection provider-id callback))
+                    ("pending"
+                     (run-at-time
+                      opencode-session-oauth-poll-interval nil
+                      (lambda ()
+                        (let ((default-directory directory))
+                          (opencode-session--auth-oauth-poll
+                           connection provider-id attempt-id callback)))))
+                    (_
+                     (message "OpenCode: sign-in for %s %s%s" provider-id
+                              (or (alist-get 'status status) "failed")
+                              (if-let* ((text (alist-get 'message status)))
+                                  (format ": %s" text)
+                                ""))))))
+     :error (lambda (&rest _args)
+              (message "OpenCode: sign-in failed for %s" provider-id)))))
 
 (provide 'emacs-opencode-session-model)
 

@@ -3,6 +3,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'ansi-color)
+(require 'json)
 (require 'emacs-opencode-session-vars)
 (require 'emacs-opencode-message)
 (require 'emacs-opencode-connection)
@@ -720,7 +721,9 @@ Interruptions requested by the user are not errors and show nothing."
          (state (opencode-message-part-state part))
          (input (alist-get 'input state))
          (metadata (alist-get 'metadata state))
-         (status (or (alist-get 'status state) "pending"))
+         (status (if (and (equal tool "execute") (alist-get 'error metadata))
+                     "error"
+                   (or (alist-get 'status state) "pending")))
          (text (opencode-session--tool-summary tool input metadata status state))
          (error-line (opencode-session--tool-error-line status state))
          (extra (opencode-session--tool-extra-block tool input metadata part))
@@ -926,12 +929,24 @@ The line lists the patched files from METADATA when the call completed."
   "Return extra block content for TOOL from INPUT or METADATA.
 PART is the full message part, used by tools that inspect its state."
   (cond
+   ((string= tool "execute")
+    (opencode-session--execute-calls metadata))
    ((string= tool "read")
     (opencode-session--read-loaded-block metadata part))
    ((member tool '("edit" "write" "patch" "apply_patch"))
     (opencode-session--tool-diff metadata))
    ((member tool '("shell" "bash"))
-    (opencode-session--bash-extra-block input metadata))))
+     (opencode-session--bash-extra-block input metadata))))
+
+(defun opencode-session--execute-calls (metadata)
+  "Render the nested Code Mode calls in METADATA, in start order."
+  (mapconcat
+   (lambda (call)
+     (concat (format "  ↳ %s [%s]" (alist-get 'tool call) (alist-get 'status call))
+             (when-let* ((input (alist-get 'input call)))
+               (concat " " (json-encode input)))))
+   (opencode-session--normalize-items (alist-get 'toolCalls metadata))
+   "\n"))
 
 (defun opencode-session--read-loaded-block (metadata part)
   "Render instruction paths loaded by a completed read PART.
@@ -1052,7 +1067,8 @@ reports resolved paths, so the directory is compared after resolving
 symlinks too."
   (when (and path (stringp path))
     (let ((directory (and opencode-session--connection
-                          (opencode-connection-directory opencode-session--connection))))
+                          (or (opencode-connection-directory opencode-session--connection)
+                              default-directory))))
       (if (and directory (file-name-absolute-p path))
           (let ((relative (cl-find-if-not
                            (lambda (candidate) (string-prefix-p ".." candidate))

@@ -889,9 +889,8 @@ to the connection that asked."
     (maphash (lambda (_session-id buffer)
                (when (buffer-live-p buffer)
                  (with-current-buffer buffer
-                   (when-let* ((connection opencode-session--connection)
-                              (directory (opencode-connection-directory connection)))
-                     (push directory directories)))))
+                   (when opencode-session--connection
+                     (push default-directory directories)))))
              opencode-session--buffers)
     (delete-dups (delq nil directories))))
 
@@ -976,8 +975,15 @@ state."
       ;; A server can answer catalog requests before it has loaded its
       ;; providers, and the change events sent before this stream opened
       ;; are lost, so reload the catalogs on every connect.
-      (opencode-connection-invalidate-models connection)
-      (opencode-connection-invalidate-commands connection)
+      (if-let* ((contexts (opencode-connection-contexts connection)))
+          (maphash
+           (lambda (directory _cache)
+             (let ((default-directory directory))
+               (opencode-connection-invalidate-models connection)
+               (opencode-connection-invalidate-commands connection)))
+           contexts)
+        (opencode-connection-invalidate-models connection)
+        (opencode-connection-invalidate-commands connection))
       (opencode-session--refresh-headers connection)
       (when (plist-get meta :reconnect)
         (dolist (buffer (opencode-session--buffers-on-connection connection))
@@ -985,7 +991,12 @@ state."
             (when opencode-session--session
               (opencode-session--resync-session connection buffer))))
         (opencode-session--refresh-status connection))
-      (opencode-session--prompt-pending-requests connection))))
+      (if-let* ((contexts (opencode-connection-contexts connection)))
+          (maphash (lambda (directory _cache)
+                     (let ((default-directory directory))
+                       (opencode-session--prompt-pending-requests connection)))
+                   contexts)
+        (opencode-session--prompt-pending-requests connection)))))
 
 (defun opencode-session--prompt-pending-requests (connection)
   "Prompt for permissions and forms already waiting on CONNECTION's server.
@@ -1092,13 +1103,19 @@ Session events for a buffer whose history is loading are held and
 replayed once the history arrives."
   (when-let* ((handler (car (cl-find-if (lambda (entry) (member event (cdr entry)))
                                         opencode-session--event-handlers))))
-    (let* ((session-id (and (string-prefix-p "session." event)
+    (let* ((connection (plist-get meta :connection))
+           (directory (alist-get 'directory (alist-get 'location data)))
+           (contexts (and (opencode-connection-p connection)
+                          (opencode-connection-contexts connection)))
+           (session-id (and (string-prefix-p "session." event)
                             (alist-get 'sessionID (opencode-session--event-data data))))
            (buffer (and session-id (opencode-session--buffer-for-session session-id))))
-      (unless (and buffer
-                   (buffer-live-p buffer)
-                   (with-current-buffer buffer
-                     (opencode-session--queue-event handler event data meta)))
+      (unless (or (and directory contexts
+                       (not (gethash (file-name-as-directory (file-truename directory)) contexts)))
+                  (and buffer
+                       (buffer-live-p buffer)
+                       (with-current-buffer buffer
+                         (opencode-session--queue-event handler event data meta))))
         (funcall handler event data meta)))))
 
 (dolist (entry opencode-session--event-handlers)

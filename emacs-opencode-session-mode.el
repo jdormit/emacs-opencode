@@ -115,9 +115,12 @@ request completes."
       (opencode-session-mode)
       (setq-local opencode-session--session session)
       (setq-local opencode-session--connection connection)
-      (when opencode-session--connection
+      (when (or (opencode-session-directory session)
+                (and connection (opencode-connection-directory connection)))
         (setq-local default-directory
-                    (opencode-connection-directory opencode-session--connection)))
+                    (file-name-as-directory
+                     (or (opencode-session-directory session)
+                         (opencode-connection-directory connection)))))
       (opencode-session--register-buffer session buffer)
       (when-let* ((info (opencode-session-info session)))
         (opencode-session--update-session info))
@@ -163,7 +166,8 @@ connection, and then call CALLBACK with the new connection."
                               (opencode-session-directory opencode-session--session))
                          (and opencode-session--connection
                               (opencode-connection-directory
-                               opencode-session--connection))))
+                               opencode-session--connection))
+                         default-directory))
           (buffer (current-buffer)))
       (unless directory
         (error "OpenCode session has no associated directory"))
@@ -1055,8 +1059,9 @@ Returns a cons cell (START . END) or nil when the input is not a slash command."
            (end (cdr bounds))
            (connection opencode-session--connection))
       (when connection
-        (let ((commands (opencode-connection-commands connection)))
-          (pcase (opencode-connection-commands-state connection)
+        (let* ((cache (opencode-connection-context connection))
+               (commands (opencode-connection-commands cache)))
+          (pcase (opencode-connection-commands-state cache)
            ((pred consp) nil)
            ('nil
             (opencode-session--fetch-commands connection)
@@ -1115,8 +1120,8 @@ preceded by whitespace or the start of the input region."
                 (let* ((data (plist-get args :data))
                        (raw (opencode-session--normalize-agent-data data))
                        (agents (opencode-session--normalize-agents data)))
-                  (setf (opencode-connection-agents connection) agents)
-                  (setf (opencode-connection-agents-raw connection) raw)
+                  (setf (opencode-connection-agents (opencode-connection-context connection)) agents)
+                  (setf (opencode-connection-agents-raw (opencode-connection-context connection)) raw)
                   (when (buffer-live-p session-buffer)
                     (with-current-buffer session-buffer
                       (opencode-session--apply-default-agent connection)
@@ -1131,7 +1136,7 @@ preceded by whitespace or the start of the input region."
            (end (cdr bounds))
            (connection opencode-session--connection))
       (when connection
-        (let ((raw (opencode-connection-agents-raw connection)))
+        (let ((raw (opencode-connection-agents-raw (opencode-connection-context connection))))
           (cond
            ;; Agents not cached yet — trigger a fetch
            ((null raw)

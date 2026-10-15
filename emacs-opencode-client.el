@@ -18,15 +18,14 @@ This is the largest page the server accepts.")
   "Return CONN's directory in the form the server stores locations.
 Symlinks are resolved and the trailing slash is dropped so sessions created
 here match the server's view of the project."
-  (when-let* ((directory (opencode-connection-directory conn)))
-    (directory-file-name (file-truename directory))))
+  (directory-file-name
+   (file-truename (or (opencode-connection-directory conn) default-directory))))
 
 (defun opencode-client--directory-header (conn headers)
   "Return a directory routing header alist for CONN.
 
-Returns nil when CONN has no directory or HEADERS already contains an
-x-opencode-directory entry.  The value is url-encoded to match the OpenCode
-SDK."
+Returns nil when HEADERS already contains an x-opencode-directory entry.
+The value is url-encoded to match the OpenCode SDK."
   (when-let* ((directory (opencode-client--location-directory conn)))
     (unless (assoc "x-opencode-directory" headers)
       `(("x-opencode-directory" . ,(url-hexify-string directory))))))
@@ -81,19 +80,28 @@ connection base URL. DATA is passed through to `request`. When JSON is
 provided, it is encoded and sent with a JSON content type. PARSER defaults to
 `json-read` when omitted. HEADERS is an alist of HTTP headers. Any remaining
 ARGS are forwarded to `request`.  Every request carries an
-x-opencode-directory header derived from the connection directory so the
+x-opencode-directory header derived from the calling directory so the
 server routes requests to the right workspace."
-  (let* ((base-url (opencode-connection-base-url conn))
+  (let* ((directory (or (opencode-connection-directory conn) default-directory))
+         (transport (or (opencode-connection-service conn) conn))
+         (base-url (opencode-connection-base-url transport))
          (url (concat (string-remove-suffix "/" base-url) path))
          (payload (when json (json-encode json)))
          (merged-headers (append (opencode-client--directory-header conn headers)
-                                 (opencode-client--auth-header conn)
+                                 (opencode-client--auth-header transport)
                                  headers
                                  (when json
                                    '(("Content-Type" . "application/json")))))
          (timeout-value (if (plist-member args :timeout)
                             timeout
                           (or (opencode-connection-timeout conn) 10))))
+    (dolist (key '(:success :error :complete))
+      (when-let* ((callback (plist-get args key)))
+        (setq args
+              (plist-put args key
+                         (lambda (&rest callback-args)
+                           (let ((default-directory directory))
+                             (apply callback callback-args)))))))
     (apply
      #'request
      url
