@@ -150,17 +150,19 @@ permission rules evaluated after the agent's own."
    :success (opencode-client--unwrap success)
    :error error))
 
-(cl-defmethod opencode-client-sessions ((conn opencode-connection) &key success error limit roots project directory)
+(cl-defmethod opencode-client-sessions ((conn opencode-connection) &key success error limit roots parent project directory)
   "Fetch OpenCode sessions, newest first.
 
 LIMIT restricts the number of returned sessions.  When ROOTS is non-nil,
-return only sessions without a parent.  PROJECT restricts results to a
-project ID and DIRECTORY to an exact session directory."
+return only sessions without a parent; PARENT instead returns the children
+of that session ID.  PROJECT restricts results to a project ID and
+DIRECTORY to an exact session directory."
   (opencode-request
    conn
    'GET
    "/api/session"
-   :params (append (when roots '(("parentID" . "null")))
+   :params (append (cond (parent `(("parentID" . ,parent)))
+                         (roots '(("parentID" . "null"))))
                    (when limit `(("limit" . ,limit)))
                    (when project `(("project" . ,project)))
                    (when directory `(("directory" . ,directory))))

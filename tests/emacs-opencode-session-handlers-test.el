@@ -313,6 +313,131 @@
      "session.usage.updated" '((sessionID . "s1") (cost . 1.5) (tokens . ((input . 3)))))
     (should (equal (alist-get 'cost (opencode-session-info opencode-session--session)) 1.5))))
 
+;;; Session moves
+
+(defmacro opencode-handlers-test--with-directories (names &rest body)
+  "Bind each of NAMES to a fresh temporary directory around BODY."
+  (declare (indent 1))
+  `(let ,(mapcar (lambda (name)
+                   `(,name (file-name-as-directory
+                            (file-truename (make-temp-file "oc-move" t)))))
+                 names)
+     (unwind-protect
+         (progn ,@body)
+       ,@(mapcar (lambda (name) `(delete-directory ,name t)) names))))
+
+(defun opencode-handlers-test--shared-connection (&rest directories)
+  "Return a shared connection with catalog contexts for DIRECTORIES."
+  (let ((connection (opencode-connection-create :shared t)))
+    (dolist (directory directories)
+      (let ((default-directory directory))
+        (opencode-connection-context connection)))
+    connection))
+
+(defun opencode-handlers-test--known-directory-p (connection directory)
+  "Return non-nil when CONNECTION has a catalog context for DIRECTORY."
+  (gethash (file-name-as-directory (file-truename directory))
+           (opencode-connection-contexts connection)))
+
+(ert-deftest test-opencode-handlers/move-updates-session-directory ()
+  "A moved session's buffer follows it to the new directory."
+  (opencode-handlers-test--with-directories (main worktree)
+    (opencode-handlers-test--with-session
+      (let ((connection (opencode-handlers-test--shared-connection main)))
+        (setq-local default-directory main)
+        ;; Events arrive in the stream's process buffer, not the session's.
+        (with-temp-buffer
+          (opencode-sse--dispatch
+           "session.moved"
+           (opencode-handlers-test--event
+            "session.moved"
+            `((sessionID . "s1") (location . ((directory . ,(directory-file-name worktree))))
+              (projectID . "p2"))
+            `(location . ((directory . ,(directory-file-name main)))))
+           (list :connection connection)))
+        (should (equal (opencode-session-directory opencode-session--session)
+                       (directory-file-name worktree)))
+        (should (equal (opencode-session-project-id opencode-session--session) "p2"))
+        (should (equal default-directory worktree))
+        (should (opencode-handlers-test--known-directory-p connection worktree))))))
+
+(ert-deftest test-opencode-handlers/move-loads-new-directory-agents ()
+  "After a move, the buffer's agents come from the new directory."
+  (opencode-handlers-test--with-directories (main worktree)
+    (opencode-handlers-test--with-session
+      (let ((connection (opencode-handlers-test--shared-connection main)))
+        (setq-local opencode-session--connection connection)
+        (setq-local default-directory main)
+        (opencode-session--set-agent-from-server "plan")
+        (cl-letf (((symbol-function 'opencode-client-agents)
+                   (lambda (_conn &rest args)
+                     (funcall (plist-get args :success)
+                              :data '(((name . "build") (mode . "primary"))
+                                      ((name . "plan") (mode . "primary"))))))
+                  ((symbol-function 'opencode-session--ensure-providers) #'ignore))
+          (with-temp-buffer
+            (opencode-sse--dispatch
+             "session.moved"
+             (opencode-handlers-test--event
+              "session.moved"
+              `((sessionID . "s1") (location . ((directory . ,(directory-file-name worktree)))))
+              `(location . ((directory . ,(directory-file-name main)))))
+             (list :connection connection))))
+        (should (equal (opencode-session--available-agents) '("build" "plan")))
+        (should (equal opencode-session--agent-index 1))))))
+
+(ert-deftest test-opencode-handlers/events-follow-moved-session ()
+  "Events for a session shown in Emacs arrive from any directory."
+  (opencode-handlers-test--with-directories (main worktree)
+    (opencode-handlers-test--with-session
+      (let ((connection (opencode-handlers-test--shared-connection main)))
+        (opencode-sse--dispatch
+         "session.renamed"
+         (opencode-handlers-test--event
+          "session.renamed" '((sessionID . "s1") (title . "Moved"))
+          `(location . ((directory . ,(directory-file-name worktree)))))
+         (list :connection connection))
+        (should (equal (opencode-session-title opencode-session--session) "Moved"))))))
+
+(ert-deftest test-opencode-handlers/moved-subagent-prompts-reach-emacs ()
+  "Permission requests from a subagent's new directory are not dropped."
+  (opencode-handlers-test--with-directories (main worktree)
+    (opencode-handlers-test--with-session
+      (let ((connection (opencode-handlers-test--shared-connection main))
+            asked)
+        (opencode-session--register-subagent "child" "s1" "task1")
+        (cl-letf (((symbol-function 'opencode-session--handle-permission-asked)
+                   (lambda (&rest _) (setq asked t))))
+          (opencode-sse--dispatch
+           "session.moved"
+           (opencode-handlers-test--event
+            "session.moved"
+            `((sessionID . "child") (location . ((directory . ,(directory-file-name worktree))))))
+           (list :connection connection))
+          (opencode-session--dispatch-event
+           "permission.asked"
+           (opencode-handlers-test--event
+            "permission.asked" '((id . "per_1") (sessionID . "child"))
+            `(location . ((directory . ,(directory-file-name worktree)))))
+           (list :connection connection)))
+        (should asked)))))
+
+(ert-deftest test-opencode-handlers/other-directories-stay-filtered ()
+  "Events for sessions Emacs does not show stay filtered by directory."
+  (opencode-handlers-test--with-directories (main other)
+    (opencode-handlers-test--with-session
+      (let ((connection (opencode-handlers-test--shared-connection main))
+            handled)
+        (cl-letf (((symbol-function 'opencode-session--handle-session-renamed)
+                   (lambda (&rest _) (setq handled t))))
+          (opencode-session--dispatch-event
+           "session.renamed"
+           (opencode-handlers-test--event
+            "session.renamed" '((sessionID . "elsewhere") (title . "x"))
+            `(location . ((directory . ,(directory-file-name other)))))
+           (list :connection connection)))
+        (should-not handled)))))
+
 ;;; Subagents
 
 (ert-deftest test-opencode-handlers/subagent-tool-calls-update-parent ()

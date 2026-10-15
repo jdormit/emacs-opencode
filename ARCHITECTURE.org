@@ -120,8 +120,35 @@ server announces each new stream with
 and busy state of every session buffer on that connection.
 
 Handlers receive the shared connection as metadata and run in the event's
-directory context. Events from directories Emacs has not opened are ignored.
+directory context. Events from directories Emacs has not opened are ignored,
+except those for sessions Emacs tracks (open buffers and known subagents).
+When one of those sessions moves, its buffer's =default-directory= follows it
+and its new directory becomes known, so its permission prompts still arrive.
 Permission and form recovery queries run once per known directory.
+
+* Magit Integration
+=emacs-opencode-magit= is optional and the only module that needs Magit. It
+fetches a session and its subagents, splits their messages into steps, and
+finds the Git worktrees they changed. Each step runs in the directory set by
+the latest =location-switched= message. Its snapshot's changed files count
+only when the step called a tool that can change files, since the snapshot
+also records other sessions' work. File-tool paths and shell working
+directories find worktrees the session never moved into.
+
+Session and turn diffs read snapshot trees from OpenCode's private snapshot
+repository, found under the data directory by the SHA-1 of the worktree path.
+This layout is not a public API. The trees and their objects are copied into
+the worktree's repository and wrapped in commits with a fixed author and
+date, so a tree always gets the same commit. The views are then ordinary
+Magit diffs: the session diff runs from the starting commit to the working
+tree, so it refreshes and keeps the same arguments while the session works,
+which tools that track a diff by its arguments rely on. Its starting commit
+drops files that are on disk but untracked, which would otherwise look
+deleted. The commits are unreferenced, so =git gc= can prune them after its
+grace period; opening the diff again recreates them while OpenCode keeps the
+snapshot. Both diffs show only the session's files when other files changed
+too. The server's =session.diff= endpoint is not used, because it rejects
+turns that span a move.
 
 Code Mode's =metadata.toolCalls= already survives live event and history
 projection. The renderer displays its ordered names, arguments, and statuses

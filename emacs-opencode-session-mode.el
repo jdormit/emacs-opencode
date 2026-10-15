@@ -962,6 +962,8 @@ tool part must not drop output fetched for an open drawer."
     (unless opencode-session--session
       (setq opencode-session--session (opencode-session-create :id (alist-get 'id info))))
     (opencode-session--apply-session-info opencode-session--session info)
+    (when-let* ((directory (opencode-session-directory opencode-session--session)))
+      (setq default-directory (file-name-as-directory directory)))
     (when-let* ((agent (alist-get 'agent info)))
       (opencode-session--set-agent-from-server agent))
     (when model

@@ -39,6 +39,16 @@ emacs -Q -L . -L ~/.emacs.d/straight/build/request -batch -L tests -l tests/emac
 emacs -Q -L . -L ~/.emacs.d/straight/build/request -batch -L tests -l tests/run-tests.el --eval '(ert-run-tests-batch-and-exit "test-opencode-sse")'
 ```
 
+The optional `emacs-opencode-magit.el` needs Magit and its dependencies on
+the load path. Without them `tests/run-tests.el` skips its tests:
+
+```sh
+B=~/.emacs.d/straight/build
+emacs -Q -L . -L $B/request -L $B/magit -L $B/magit-section -L $B/compat \
+  -L $B/cond-let -L $B/llama -L $B/transient -L $B/with-editor -L $B/dash \
+  -batch -L tests -l tests/run-tests.el -f ert-run-tests-batch-and-exit
+```
+
 Tests live in `tests/` with one file per source module (e.g.,
 `tests/emacs-opencode-sse-test.el` tests `emacs-opencode-sse.el`).
 `tests/run-tests.el` loads all test files for batch execution.
@@ -53,6 +63,7 @@ None found at the time of writing.
 ## External Dependencies
 
 - **`request`** (MELPA) — the only external Emacs package. Used in the client module.
+- **`magit`** (optional) — used only by `emacs-opencode-magit.el`.
 - **`curl`** — required on `$PATH` for SSE streaming.
 - Built-ins used: `cl-lib`, `subr-x`, `json`, `project`.
 

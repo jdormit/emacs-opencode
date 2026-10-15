@@ -115,6 +115,8 @@ They support:
   MCP servers.
 - Automatic reconnection: if the event stream drops, the client reconnects and
   reloads open sessions, since events sent while it was disconnected are lost.
+- Sessions that move to another directory, such as a new worktree, keep
+  updating, and their buffer's =default-directory= follows them.
 
 Context commands include the active region when one is selected; otherwise they
 include the 10 lines around point plus file and line metadata when available.
@@ -163,6 +165,33 @@ All commands auto-detect the current project root. Use a prefix argument
 
 Under =evil-mode=, =TAB= and =S-TAB= (or =<backtab>=) cycle to the next and
 previous agent in normal and insert states.
+
+** Magit Integration
+
+=emacs-opencode-magit= is optional and needs Magit. Load it with
+=(require 'emacs-opencode-magit)=; it binds its commands under =C-c C-d= in
+session buffers.
+
+These commands find every worktree the session and its subagents changed,
+including worktrees they moved into or edited by path. When there are several,
+they ask which one to use.
+
+| Key         | Shows                                                                          |
+|-------------+--------------------------------------------------------------------------------|
+| =C-c C-d o= | An overview of the changed worktrees and their files                           |
+| =C-c C-d s= | =magit-status= for a changed worktree                                          |
+| =C-c C-d d= | The worktree's changes since its base branch (=C-u=: only the session's files) |
+| =C-c C-d a= | What the session and its subagents changed                                     |
+| =C-c C-d t= | What the turn at point, or the latest turn, changed                            |
+
+The session diff shows the worktree's changes since the session started there,
+and =g= picks up later work. Like other Magit diffs of the working tree, it
+leaves out untracked files. The turn diff shows what changed during one turn.
+If files the session didn't touch changed too, each diff shows only the
+session's files.
+
+In the overview, =RET= opens =magit-status=, =d= and =s= show the diffs above,
+=o= opens the session, and =g= refreshes.
 
 * Lisp API
 

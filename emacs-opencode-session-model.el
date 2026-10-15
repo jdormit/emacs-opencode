@@ -172,6 +172,20 @@ they are loaded."
              (funcall on-ready agents))))
       (opencode-session--maybe-fetch-agents connection))))
 
+(defun opencode-session--load-catalogs ()
+  "Load the agent and model catalogs for the buffer's directory.
+A session that moves to another directory needs that directory's catalogs."
+  (when-let* ((connection opencode-session--connection))
+    (let ((buffer (current-buffer)))
+      (opencode-session--ensure-agents
+       connection
+       (lambda (_agents)
+         (when (buffer-live-p buffer)
+           (with-current-buffer buffer
+             (when opencode-session--agent
+               (opencode-session--set-agent-from-server opencode-session--agent)))))))
+    (opencode-session--ensure-providers connection)))
+
 (defun opencode-session--refresh-agents (connection)
   "Refresh the cached agent list for CONNECTION."
   (setf (opencode-connection-agents (opencode-connection-context connection)) nil)

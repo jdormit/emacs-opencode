@@ -188,6 +188,15 @@ last `request' call made during BODY."
                                 :success #'ignore :error #'ignore)
       (should (equal (plist-get args :params) '(("directory" . "/tmp/project")))))))
 
+(ert-deftest test-opencode-client/sessions-forwards-parent ()
+  "A parent filter lists that session's children."
+  (let ((conn (opencode-client-test--connection "/tmp/project/")))
+    (opencode-client-test--with-captured-request _url args
+      (opencode-client-sessions conn :parent "ses_1" :limit 500
+                                :success #'ignore :error #'ignore)
+      (should (equal (plist-get args :params)
+                     '(("parentID" . "ses_1") ("limit" . 500)))))))
+
 ;;; session-messages
 
 (ert-deftest test-opencode-client/session-messages-pages-through-history ()

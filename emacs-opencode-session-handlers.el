@@ -36,6 +36,7 @@
 (declare-function opencode-session--store-agents "emacs-opencode-session-model")
 (declare-function opencode-session--apply-default-agent "emacs-opencode-session-model")
 (declare-function opencode-session--refresh-headers "emacs-opencode-session-model")
+(declare-function opencode-session--load-catalogs "emacs-opencode-session-model")
 
 (cl-defstruct (opencode-session--prompt-state
                (:constructor opencode-session--prompt-state-create))
@@ -193,6 +194,33 @@ filter."
   (let ((payload (opencode-session--event-data data)))
     (opencode-session--with-session-buffer (alist-get 'sessionID payload)
       (opencode-session--set-title (alist-get 'title payload)))))
+
+(defun opencode-session--tracked-session-p (session-id)
+  "Return non-nil when SESSION-ID is shown in a buffer or is a known subagent."
+  (or (buffer-live-p (opencode-session--buffer-for-session session-id))
+      (opencode-session--subagent-parent session-id)))
+
+(defun opencode-session--handle-session-moved (_event data meta)
+  "Handle session.moved event DATA arriving with META.
+The session's buffer follows it, and requests from its new directory,
+such as permission prompts, reach Emacs."
+  (let* ((payload (opencode-session--event-data data))
+         (session-id (alist-get 'sessionID payload))
+         (location (alist-get 'location payload))
+         (connection (plist-get meta :connection)))
+    (when (and (alist-get 'directory location)
+               (opencode-session--tracked-session-p session-id))
+      (when (opencode-connection-p connection)
+        (let ((default-directory (file-name-as-directory (alist-get 'directory location))))
+          (opencode-connection-context connection)))
+      (opencode-session--with-session-buffer session-id
+        (when opencode-session--session
+          (let ((info (copy-alist (opencode-session-info opencode-session--session))))
+            (setf (alist-get 'location info) location)
+            (when-let* ((project-id (alist-get 'projectID payload)))
+              (setf (alist-get 'projectID info) project-id))
+            (opencode-session--update-session info)
+            (opencode-session--load-catalogs)))))))
 
 (defun opencode-session--handle-agent-selected (_event data &optional _meta)
   "Handle session.agent.selected event DATA."
@@ -1055,6 +1083,7 @@ the announcement while disconnected, asks the server for them."
 (defconst opencode-session--event-handlers
   '((opencode-session--handle-server-connected "server.connected")
     (opencode-session--handle-session-renamed "session.renamed")
+    (opencode-session--handle-session-moved "session.moved")
     (opencode-session--handle-agent-selected "session.agent.selected")
     (opencode-session--handle-model-selected "session.model.selected")
     (opencode-session--handle-usage-updated "session.usage.updated")
@@ -1099,8 +1128,10 @@ Every handler is called with the event type, the event, and a META plist.")
 
 (defun opencode-session--dispatch-event (event data meta)
   "Run the session handler for EVENT with DATA and META.
-Session events for a buffer whose history is loading are held and
-replayed once the history arrives."
+Events from directories Emacs does not use are dropped, except those for
+sessions Emacs tracks, which can move to other directories.  Session
+events for a buffer whose history is loading are held and replayed once
+the history arrives."
   (when-let* ((handler (car (cl-find-if (lambda (entry) (member event (cdr entry)))
                                         opencode-session--event-handlers))))
     (let* ((connection (plist-get meta :connection))
@@ -1111,6 +1142,7 @@ replayed once the history arrives."
                             (alist-get 'sessionID (opencode-session--event-data data))))
            (buffer (and session-id (opencode-session--buffer-for-session session-id))))
       (unless (or (and directory contexts
+                       (not (and session-id (opencode-session--tracked-session-p session-id)))
                        (not (gethash (file-name-as-directory (file-truename directory)) contexts)))
                   (and buffer
                        (buffer-live-p buffer)
