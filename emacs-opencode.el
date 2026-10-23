@@ -384,6 +384,20 @@ file, include the file name and relevant line numbers."
           (opencode--ensure-session-buffer session connection)))))))
 
 ;;;###autoload
+(defun opencode-open-session-by-id (session-id &optional directory)
+  "Open the buffer for SESSION-ID, reusing it when already open.
+DIRECTORY is the session's directory and defaults to the home directory.
+Returns nil so that `emacsclient --eval' callers don't print the connection."
+  (interactive (list (read-string "OpenCode session ID: ")))
+  (opencode-run-server
+   (opencode--normalize-directory (or directory "~"))
+   (lambda (connection)
+     (opencode--ensure-session-buffer
+      (opencode-session-create :id session-id)
+      connection)))
+  nil)
+
+;;;###autoload
 (defun opencode-send-to-session (directory input)
   "Send INPUT to a selected OpenCode session in DIRECTORY.
 

@@ -193,6 +193,17 @@
     (should (string-match-p "unique context line" sent))
     (should-not (string-match-p "wrong buffer" sent))))
 
+(ert-deftest test-opencode/open-session-by-id ()
+  "Connect in the session's directory and open or reuse its buffer."
+  (let (server-dir opened)
+    (cl-letf (((symbol-function 'opencode-run-server)
+               (lambda (dir on-ready) (setq server-dir dir) (funcall on-ready 'conn) 'conn))
+              ((symbol-function 'opencode--ensure-session-buffer)
+               (lambda (session conn &rest _) (setq opened (list (opencode-session-id session) conn)))))
+      (should-not (opencode-open-session-by-id "ses_1" "/tmp/proj")))
+    (should (equal server-dir "/tmp/proj/"))
+    (should (equal opened '("ses_1" conn)))))
+
 (ert-deftest test-opencode/restart-runs-service-restart ()
   (let ((opencode-server-command "opencode") command buffer sentinel messages)
     (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) t))
