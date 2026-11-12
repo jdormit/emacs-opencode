@@ -174,9 +174,13 @@ previous agent in normal and insert states.
 
 =M-x opencode-sessions= lists recent sessions from every project, grouped by
 project (on Emacs 30 and later). Each row shows the session's status, title,
-directory, the lines its worktree changed since the base branch, cost, and
-when it was last updated. Changes count uncommitted edits but not untracked
-files. The list updates as sessions run.
+the worktree it changed, the lines it changed there since the base branch,
+cost, and when it was last updated. The worktree and changes come from the
+files the session and its subagents edited, so they follow work done in
+another worktree whether or not the session moved there. Changes count only
+those files, including uncommitted edits and new untracked files. A session
+that changed several worktrees shows the one with the most changes and how many
+others, with their changes added up. The list updates as sessions run.
 
 A session's status counts its subagents:
 

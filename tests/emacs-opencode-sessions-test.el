@@ -107,17 +107,53 @@ Re-rendering is stubbed out."
       (should (equal (mapcar #'car (cdar groups)) '("b-ask" "b-idle")))
       (should (equal (mapcar #'car (cdadr groups)) '("a-new" "a-old"))))))
 
+(defun opencode-sessions-test--columns (id)
+  "Return the text of the columns in the row of session ID."
+  (mapcar #'substring-no-properties
+          (append (cadr (opencode-sessions--entry
+                         (gethash id (opencode-sessions-test--table 'sessions))))
+                  nil)))
+
+(defun opencode-sessions-test--set-changes (id &rest roots)
+  "Record that session ID changed ROOTS, each (DIRECTORY FILES COUNTS)."
+  (puthash id
+           (opencode-sessions--work-create
+            :updated 2000
+            :roots (mapcar (lambda (root)
+                             (opencode-changes-root-create :directory (nth 0 root)
+                                                           :files (nth 1 root)))
+                           roots)
+            :stats (cl-loop for root in roots
+                            when (nth 2 root) collect (cons (nth 0 root) (nth 2 root))))
+           (opencode-sessions-test--table 'changes)))
+
 (ert-deftest test-opencode-sessions/entry-columns ()
   "A row shows the state, title, directory, changes, cost and age."
   (opencode-sessions-test--with-tracker
       (list (opencode-sessions-test--info "s1" :title "Fix bug" :directory "/tmp/p1"
                                           :cost 1.234 :updated 1000 :idle 900))
-    (puthash "/tmp/p1" '(12 . 3) (opencode-sessions-test--table 'diffs))
+    (opencode-sessions-test--set-changes "s1" '("/tmp/p1/" ("a.el") (12 . 3)))
     (cl-letf (((symbol-function 'float-time) (lambda (&rest _) 3601.0)))
-      (let ((columns (cadr (opencode-sessions--entry
-                            (gethash "s1" (opencode-sessions-test--table 'sessions))))))
-        (should (equal (mapcar #'substring-no-properties (append columns nil))
-                       '("done" "Fix bug" "/tmp/p1" "+12 -3" "$1.23" "1h")))))))
+      (should (equal (opencode-sessions-test--columns "s1")
+                     '("done" "Fix bug" "/tmp/p1" "+12 -3" "$1.23" "1h"))))))
+
+(ert-deftest test-opencode-sessions/entry-shows-where-work-happened ()
+  "The directory is the worktree the session changed, and changes add up."
+  (opencode-sessions-test--with-tracker
+      (list (opencode-sessions-test--info "s1" :directory "/tmp/p1")
+            (opencode-sessions-test--info "s2" :directory "/tmp/p1")
+            (opencode-sessions-test--info "s3" :directory "/tmp/p1"))
+    (opencode-sessions-test--set-changes "s1" '("/tmp/wt/a/" ("x.el") (5 . 1)))
+    (opencode-sessions-test--set-changes "s2"
+                                         '("/tmp/wt/a/" ("x.el") (5 . 1))
+                                         '("/tmp/wt/b/" ("y.el") (2 . 2)))
+    (opencode-sessions-test--set-changes "s3")
+    (should (equal (seq-subseq (opencode-sessions-test--columns "s1") 2 4)
+                   '("/tmp/wt/a" "+5 -1")))
+    (should (equal (seq-subseq (opencode-sessions-test--columns "s2") 2 4)
+                   '("/tmp/wt/a +1" "+7 -3")))
+    (should (equal (seq-subseq (opencode-sessions-test--columns "s3") 2 4)
+                   '("/tmp/p1" "")))))
 
 (ert-deftest test-opencode-sessions/archived-sessions-are-not-listed ()
   "Archived sessions are left out of the overview."
@@ -143,34 +179,211 @@ Re-rendering is stubbed out."
                  '(1 . 0)))
   (should (equal (opencode-sessions--parse-shortstat "") '(0 . 0))))
 
-(ert-deftest test-opencode-sessions/diff-stats-from-git ()
-  "Changes are counted against the merge base with the default branch."
+(defmacro opencode-sessions-test--with-clone (&rest body)
+  "Run BODY in a clone on branch feature, tracking origin/main.
+The clone's tracked files are f and g.  The variable `clone' names it and
+`git' runs Git in it, returning its output."
+  (declare (indent 0))
+  `(let* ((origin (file-name-as-directory (make-temp-file "oc-sessions-origin" t)))
+          (clone (concat (directory-file-name origin) "-clone/")))
+     (cl-flet ((git (&rest args)
+                 (with-temp-buffer
+                   (let ((default-directory (if (file-directory-p clone) clone origin)))
+                     (apply #'process-file "git" nil t nil
+                            "-c" "user.name=t" "-c" "user.email=t@t" args))
+                   (buffer-string))))
+       (unwind-protect
+           (progn
+             (git "init" "-q" "-b" "main")
+             (write-region "a\n" nil (expand-file-name "f" origin))
+             (write-region "a\n" nil (expand-file-name "g" origin))
+             (git "add" "f" "g")
+             (git "commit" "-qm" "init")
+             (git "clone" "-q" origin clone)
+             (git "checkout" "-qb" "feature" "--track" "origin/main")
+             ,@body)
+         (delete-directory origin t)
+         (delete-directory clone t)))))
+
+(defun opencode-sessions-test--count (root)
+  "Count ROOT's changes for a session and return them once Git finishes."
+  (let ((work (opencode-sessions--work-create)))
+    (opencode-sessions--count work root)
+    (with-timeout (5 (error "Timed out waiting for git"))
+      (while (not (opencode-sessions--work-stats work))
+        (accept-process-output nil 0.05)))
+    (cdar (opencode-sessions--work-stats work))))
+
+(ert-deftest test-opencode-sessions/count-session-files ()
+  "Only the session's files count, against the merge base with the default branch."
   (skip-unless (executable-find "git"))
-  (let* ((origin (file-name-as-directory (make-temp-file "oc-sessions-origin" t)))
-         (clone (concat (directory-file-name origin) "-clone/")))
-    (unwind-protect
-        (let ((git (lambda (dir &rest args)
-                     (let ((default-directory dir))
-                       (apply #'process-file "git" nil nil nil
-                              "-c" "user.name=t" "-c" "user.email=t@t" args)))))
-          (funcall git origin "init" "-q" "-b" "main")
-          (write-region "a\n" nil (expand-file-name "f" origin))
-          (funcall git origin "add" "f")
-          (funcall git origin "commit" "-qm" "init")
-          (funcall git origin "clone" "-q" origin clone)
-          (funcall git clone "checkout" "-qb" "feature" "--track" "origin/main")
-          (write-region "a\nb\nc\n" nil (expand-file-name "f" clone))
-          (funcall git clone "commit" "-qam" "more")
-          (write-region "a\nb\n" nil (expand-file-name "f" clone))
-          (opencode-sessions-test--with-tracker nil
-            (opencode-sessions--fetch-diff (directory-file-name clone) t)
-            (let ((diffs (opencode-sessions-test--table 'diffs)))
-              (with-timeout (5 (error "Timed out waiting for git"))
-                (while (not (consp (gethash (directory-file-name clone) diffs)))
-                  (accept-process-output nil 0.05)))
-              (should (equal (gethash (directory-file-name clone) diffs) '(1 . 0))))))
-      (delete-directory origin t)
-      (delete-directory clone t))))
+  (opencode-sessions-test--with-clone
+    (write-region "a\nb\nc\n" nil (expand-file-name "f" clone))
+    (git "commit" "-qam" "more")
+    (write-region "a\nb\n" nil (expand-file-name "f" clone))
+    (write-region "a\nothers\n" nil (expand-file-name "g" clone))
+    (opencode-sessions-test--with-tracker nil
+      (should (equal (opencode-sessions-test--count
+                      (opencode-changes-root-create :directory clone :files '("f")))
+                     '(1 . 0))))))
+
+(ert-deftest test-opencode-sessions/count-new-files-without-touching-the-index ()
+  "Untracked files the session wrote count, and Git's index is left alone."
+  (skip-unless (executable-find "git"))
+  (opencode-sessions-test--with-clone
+    (write-region "one\ntwo\n" nil (expand-file-name "new" clone))
+    (write-region "a\nb\n" nil (expand-file-name "f" clone))
+    (let ((status (git "status" "--porcelain"))
+          (index (with-temp-buffer
+                   (insert-file-contents-literally (expand-file-name ".git/index" clone))
+                   (buffer-string))))
+      (opencode-sessions-test--with-tracker nil
+        (should (equal (opencode-sessions-test--count
+                        (opencode-changes-root-create :directory clone
+                                                      :files '("f" "new" "gone")))
+                       '(3 . 0))))
+      (should (equal (git "status" "--porcelain") status))
+      (should (equal (with-temp-buffer
+                       (insert-file-contents-literally (expand-file-name ".git/index" clone))
+                       (buffer-string))
+                     index)))))
+
+(ert-deftest test-opencode-sessions/count-whole-worktree-without-files ()
+  "A worktree whose changed files OpenCode did not record counts in full."
+  (skip-unless (executable-find "git"))
+  (opencode-sessions-test--with-clone
+    (write-region "a\nb\n" nil (expand-file-name "f" clone))
+    (write-region "a\nc\n" nil (expand-file-name "g" clone))
+    (opencode-sessions-test--with-tracker nil
+      (should (equal (opencode-sessions-test--count
+                      (opencode-changes-root-create :directory clone))
+                     '(2 . 0))))))
+
+;;; Finding changes
+
+(defmacro opencode-sessions-test--with-fetch-stubs (&rest body)
+  "Run BODY with session trees fetched by hand.
+`fetches' lists (SESSION-ID CALLBACK ON-ERROR) for each fetch started,
+newest first, and `counted' lists the directories counted.  Each tree's
+roots are the directories in its session info's `roots'."
+  (declare (indent 0))
+  `(let ((overview (get-buffer-create opencode-sessions--buffer-name))
+         fetches counted)
+     (unwind-protect
+         (cl-letf (((symbol-function 'opencode-changes-fetch-tree)
+                    (lambda (_conn id callback on-error)
+                      (push (list id callback on-error) fetches)))
+                   ((symbol-function 'opencode-changes-tree-steps)
+                    (lambda (tree &optional _turn) (alist-get 'roots (caar tree))))
+                   ((symbol-function 'opencode-changes-roots)
+                    (lambda (directories)
+                      (when (member "error" directories)
+                        (error "Bad history"))
+                      (mapcar (lambda (directory)
+                                (opencode-changes-root-create :directory directory))
+                              directories)))
+                   ((symbol-function 'opencode-sessions--count)
+                    (lambda (_work root)
+                      (push (opencode-changes-root-directory root) counted))))
+           ,@body)
+       (kill-buffer overview))))
+
+(defun opencode-sessions-test--finish-fetch (fetch &optional updated &rest roots)
+  "Finish FETCH with a tree whose session was UPDATED and changed ROOTS."
+  (funcall (nth 1 fetch)
+           (list (list `((id . ,(car fetch)) (time . ((updated . ,(or updated 2000))))
+                         (roots . ,roots))))))
+
+(defun opencode-sessions-test--root-directories (id)
+  "Return the directories of the worktrees session ID changed."
+  (mapcar #'opencode-changes-root-directory
+          (opencode-sessions--work-roots
+           (gethash id (opencode-sessions-test--table 'changes)))))
+
+(ert-deftest test-opencode-sessions/fetch-changes-finds-roots-and-counts ()
+  "Changes are found from the session tree and each worktree is counted."
+  (opencode-sessions-test--with-tracker
+      (list (opencode-sessions-test--info "s1"))
+    (opencode-sessions-test--with-fetch-stubs
+      (opencode-sessions--fetch-changes "s1")
+      (should (equal (mapcar #'car fetches) '("s1")))
+      (opencode-sessions-test--finish-fetch (car fetches) 2000 "/wt/a/" "/wt/b/")
+      (should (equal (opencode-sessions-test--root-directories "s1") '("/wt/a/" "/wt/b/")))
+      (should (equal (sort counted #'string<) '("/wt/a/" "/wt/b/"))))))
+
+(ert-deftest test-opencode-sessions/fetch-changes-again-only-when-updated ()
+  "An unchanged session is only counted again; an updated one is fetched again."
+  (opencode-sessions-test--with-tracker
+      (list (opencode-sessions-test--info "s1" :updated 2000))
+    (opencode-sessions-test--with-fetch-stubs
+      (opencode-sessions--fetch-changes "s1")
+      (opencode-sessions-test--finish-fetch (car fetches) 2000 "/wt/a/")
+      (setq counted nil)
+      (opencode-sessions--fetch-changes "s1")
+      (should (= (length fetches) 1))
+      (should (equal counted '("/wt/a/")))
+      (opencode-sessions--update "s1" 'time '((updated . 3000)))
+      (opencode-sessions--fetch-changes "s1")
+      (should (= (length fetches) 2)))))
+
+(ert-deftest test-opencode-sessions/fetch-changes-limits-concurrent-fetches ()
+  "Only a few sessions are fetched at once; the rest wait their turn."
+  (let ((ids '("s1" "s2" "s3" "s4" "s5" "s6")))
+    (opencode-sessions-test--with-tracker
+        (mapcar #'opencode-sessions-test--info ids)
+      (opencode-sessions-test--with-fetch-stubs
+        (mapc #'opencode-sessions--fetch-changes ids)
+        (should (= (length fetches) opencode-sessions--max-fetches))
+        (opencode-sessions-test--finish-fetch (car (last fetches)))
+        (should (= (length fetches) (1+ opencode-sessions--max-fetches)))
+        (funcall (nth 2 (car (last fetches 2))))
+        (should (= (length fetches) (length ids)))))))
+
+(ert-deftest test-opencode-sessions/no-fetches-without-the-overview ()
+  "Changes are not looked up while only the mode line indicator needs sessions."
+  (opencode-sessions-test--with-tracker
+      (list (opencode-sessions-test--info "s1"))
+    (opencode-sessions-test--with-fetch-stubs
+      (kill-buffer overview)
+      (opencode-sessions--fetch-changes "s1" t)
+      (should-not fetches))))
+
+(ert-deftest test-opencode-sessions/failed-lookup-is-retried ()
+  "A history that cannot be analyzed is looked up again next time."
+  (opencode-sessions-test--with-tracker
+      (list (opencode-sessions-test--info "s1"))
+    (opencode-sessions-test--with-fetch-stubs
+      (opencode-sessions--fetch-changes "s1")
+      (cl-letf (((symbol-function 'message) #'ignore))
+        (opencode-sessions-test--finish-fetch (car fetches) 2000 "error"))
+      (opencode-sessions--fetch-changes "s1")
+      (should (= (length fetches) 2)))))
+
+(ert-deftest test-opencode-sessions/relisted-session-is-fetched-once ()
+  "A session dropped and listed again while queued is fetched only once."
+  (let ((opencode-sessions--max-fetches 1))
+    (opencode-sessions-test--with-tracker
+        (list (opencode-sessions-test--info "s1") (opencode-sessions-test--info "s2"))
+      (opencode-sessions-test--with-fetch-stubs
+        (opencode-sessions--fetch-changes "s1")
+        (opencode-sessions--fetch-changes "s2")
+        (opencode-sessions--hide "s2")
+        (opencode-sessions--add (opencode-sessions-test--info "s2"))
+        (opencode-sessions--fetch-changes "s2")
+        (opencode-sessions-test--finish-fetch (car fetches))
+        (opencode-sessions-test--finish-fetch (car fetches))
+        (should (equal (mapcar #'car fetches) '("s2" "s1")))))))
+
+(ert-deftest test-opencode-sessions/forced-fetch-while-loading-runs-after ()
+  "Forcing a fetch while one runs fetches again once it finishes."
+  (opencode-sessions-test--with-tracker
+      (list (opencode-sessions-test--info "s1"))
+    (opencode-sessions-test--with-fetch-stubs
+      (opencode-sessions--fetch-changes "s1")
+      (opencode-sessions--fetch-changes "s1" t)
+      (should (= (length fetches) 1))
+      (opencode-sessions-test--finish-fetch (car fetches) 2000 "/wt/a/")
+      (should (= (length fetches) 2)))))
 
 ;;; Events
 
@@ -208,15 +421,18 @@ Re-rendering is stubbed out."
 (ert-deftest test-opencode-sessions/learn-unlisted-root-adds-it ()
   "Learning a top-level session that is not listed adds it to the list."
   (opencode-sessions-test--with-tracker nil
-    (cl-letf (((symbol-function 'opencode-client-session-get)
-               (lambda (_conn id &rest args)
-                 (funcall (plist-get args :success) :data (opencode-sessions-test--info id))))
-              ((symbol-function 'opencode-sessions--fetch-diff) #'ignore))
-      (opencode-sessions--learn "s9"))
+    (let (fetched)
+      (cl-letf (((symbol-function 'opencode-client-session-get)
+                 (lambda (_conn id &rest args)
+                   (funcall (plist-get args :success) :data (opencode-sessions-test--info id))))
+                ((symbol-function 'opencode-sessions--fetch-changes)
+                 (lambda (id &optional _force) (push id fetched))))
+        (opencode-sessions--learn "s9"))
+      (should (equal fetched '("s9"))))
     (should (gethash "s9" (opencode-sessions-test--table 'sessions)))))
 
 (ert-deftest test-opencode-sessions/execution-ended-refreshes-session ()
-  "A finished run reloads the session's info and its directory's changes."
+  "A finished run reloads the session's info and finds its changes again."
   (opencode-sessions-test--with-tracker
       (list (opencode-sessions-test--info "s1"))
     (puthash "s1" "busy" (opencode-sessions-test--table 'running))
@@ -225,13 +441,13 @@ Re-rendering is stubbed out."
                  (lambda (_conn id &rest args)
                    (funcall (plist-get args :success)
                             :data (opencode-sessions-test--info id :idle 50 :outcome "succeeded"))))
-                ((symbol-function 'opencode-sessions--fetch-diff)
-                 (lambda (directory &optional force) (push (list directory force) diffed)))
+                ((symbol-function 'opencode-sessions--fetch-changes)
+                 (lambda (id &optional force) (push (list id force) diffed)))
                 ((symbol-function 'opencode-sessions--view-selected) #'ignore))
         (opencode-sessions-test--event "session.execution.succeeded" '((sessionID . "s1"))))
       (should-not (gethash "s1" (opencode-sessions-test--table 'running)))
       (should (eq (opencode-sessions--state "s1") 'done))
-      (should (equal diffed '(("/tmp/p1" t)))))))
+      (should (equal diffed '(("s1" t)))))))
 
 (ert-deftest test-opencode-sessions/prompt-events ()
   "Permission and form events add and remove pending prompts."
@@ -277,10 +493,9 @@ Re-rendering is stubbed out."
   (opencode-sessions-test--with-tracker
       (list (opencode-sessions-test--info "s1"))
     (puthash "p2" "two" (opencode-sessions-test--table 'projects))
-    (cl-letf (((symbol-function 'opencode-sessions--fetch-diff) #'ignore))
-      (opencode-sessions-test--event "session.moved"
-                                     '((sessionID . "s1") (projectID . "p2")
-                                       (location . ((directory . "/tmp/p2"))))))
+    (opencode-sessions-test--event "session.moved"
+                                   '((sessionID . "s1") (projectID . "p2")
+                                     (location . ((directory . "/tmp/p2")))))
     (let ((info (gethash "s1" (opencode-sessions-test--table 'sessions))))
       (should (equal (alist-get 'projectID info) "p2"))
       (should (equal (opencode-sessions--directory info) "/tmp/p2")))))
@@ -344,8 +559,8 @@ Re-rendering is stubbed out."
                             :data `(((id . "per_1") (sessionID . ,id))))))
                 ((symbol-function 'opencode-client-session-forms)
                  (lambda (_conn _id &rest args) (funcall (plist-get args :success) :data nil)))
-                ((symbol-function 'opencode-sessions--fetch-diff)
-                 (lambda (directory &optional _force) (push directory diffed)))
+                ((symbol-function 'opencode-sessions--fetch-changes)
+                 (lambda (id &optional _force) (push id diffed)))
                 ((symbol-function 'float-time) (lambda (&rest _) 3.0)))
         (opencode-sessions--load))
       (let ((sessions (opencode-sessions-test--table 'sessions))
@@ -354,7 +569,7 @@ Re-rendering is stubbed out."
         (should (equal (gethash "p1" projects) "/tmp/p1"))
         (should (equal (gethash "p2" projects) "Two"))
         (should (eq (opencode-sessions--state "s1") 'permission))
-        (should (equal (sort diffed #'string<) '("/tmp/p1" "/tmp/p2")))))))
+        (should (equal (sort diffed #'string<) '("s1" "s2")))))))
 
 (defun opencode-sessions-test--pages (pages)
   "Return a stub for `opencode-client-sessions' serving PAGES in order.
@@ -379,7 +594,7 @@ The clock reads one million seconds."
      (setq opencode-sessions-test--cursors nil)
      (cl-letf (((symbol-function 'opencode-client-projects) #'ignore)
                ((symbol-function 'opencode-client-session-active) #'ignore)
-               ((symbol-function 'opencode-sessions--fetch-diff) #'ignore)
+               ((symbol-function 'opencode-sessions--fetch-changes) #'ignore)
                ((symbol-function 'opencode-client-sessions) (opencode-sessions-test--pages ,pages))
                ((symbol-function 'float-time) (lambda (&rest _) 1000000.0)))
        (let ((opencode-sessions--page-size 2))

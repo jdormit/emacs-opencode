@@ -125,14 +125,24 @@ When one of those sessions moves, its buffer's =default-directory= follows it
 and its new directory becomes known, so its permission prompts still arrive.
 Permission and form recovery queries run once per known directory.
 
+* Session Changes
+=emacs-opencode-changes= fetches a session and its subagents, splits their
+messages into steps, and finds the Git worktrees and files they changed.
+Each step runs in the directory set by the latest =location-switched=
+message. Its snapshot's changed files count only when the step called a tool
+that can change files, since the snapshot also records other sessions' work.
+File-tool paths and shell working directories find worktrees the session
+never moved into.
+
+The session overview looks up each listed session's worktrees, a few
+sessions at a time, and again only after the session is updated. It counts
+the lines changed in the session's files since each worktree's base branch.
+Untracked files are marked intent-to-add in a copy of the index, so they
+count without touching Git's own index.
+
 * Magit Integration
 =emacs-opencode-magit= is optional and the only module that needs Magit. It
-fetches a session and its subagents, splits their messages into steps, and
-finds the Git worktrees they changed. Each step runs in the directory set by
-the latest =location-switched= message. Its snapshot's changed files count
-only when the step called a tool that can change files, since the snapshot
-also records other sessions' work. File-tool paths and shell working
-directories find worktrees the session never moved into.
+shows Magit views of the worktrees =emacs-opencode-changes= finds.
 
 Session and turn diffs read snapshot trees from OpenCode's private snapshot
 repository, found under the data directory by the SHA-1 of the worktree path.

@@ -3,6 +3,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'tabulated-list)
+(require 'emacs-opencode-changes)
 (require 'emacs-opencode-client)
 (require 'emacs-opencode-connection)
 (require 'emacs-opencode-session)
@@ -35,6 +36,9 @@ within `opencode-sessions-days'."
 (defconst opencode-sessions--buffer-name "*OpenCode: Sessions*"
   "Name of the session overview buffer.")
 
+(defconst opencode-sessions--max-fetches 4
+  "Maximum number of sessions whose changes are looked up at once.")
+
 (cl-defstruct (opencode-sessions--tracker (:constructor opencode-sessions--tracker-create))
   "What the overview knows about the server's sessions.
 SESSIONS maps the ID of each listed top-level session to its info.
@@ -42,17 +46,30 @@ PARENTS maps other session IDs to their parent's ID, to `:root' for
 top-level sessions that are not listed, or to `:pending' while being
 looked up.  RUNNING maps running session IDs to \"busy\" or \"retry\".
 PROMPTS maps pending request IDs to (SESSION-ID . KIND), where KIND is
-`permission' or `question'.  DIFFS maps directories to (ADDED . DELETED) line counts.
-PROJECTS maps project IDs to display names.  VIEWED maps session IDs to
-the idle time last reported as viewed."
+`permission' or `question'.  CHANGES maps listed session IDs to what
+they changed, an `opencode-sessions--work'.  PROJECTS maps project IDs to
+display names.  VIEWED maps session IDs to the idle time last reported as
+viewed.  QUEUE lists (SESSION-ID . WORK) for the sessions waiting to have
+their changes looked up, and FETCHING counts the lookups running."
   connection
   (sessions (make-hash-table :test 'equal))
   (parents (make-hash-table :test 'equal))
   (running (make-hash-table :test 'equal))
   (prompts (make-hash-table :test 'equal))
-  (diffs (make-hash-table :test 'equal))
+  (changes (make-hash-table :test 'equal))
   (projects (make-hash-table :test 'equal))
-  (viewed (make-hash-table :test 'equal)))
+  (viewed (make-hash-table :test 'equal))
+  (queue nil)
+  (fetching 0))
+
+(cl-defstruct (opencode-sessions--work (:constructor opencode-sessions--work-create))
+  "What a listed session and its subagents changed.
+ROOTS are the worktrees they changed, found when the session was last
+UPDATED.  STATS maps worktree directories to (ADDED . DELETED) line
+counts, from the counts started at GENERATION.  LOADING is non-nil while
+ROOTS are looked up, and AGAIN when they must be looked up again once
+that finishes."
+  updated roots stats (generation 0) loading again)
 
 (defvar opencode-sessions--tracker nil
   "The session tracker, or nil when neither the overview nor the indicator is on.")
@@ -82,6 +99,7 @@ the idle time last reported as viewed."
 (defun opencode-sessions--hide (session-id)
   "Stop listing the top-level session SESSION-ID, remembering it is top-level."
   (remhash session-id (opencode-sessions--table 'sessions))
+  (remhash session-id (opencode-sessions--table 'changes))
   (puthash session-id :root (opencode-sessions--table 'parents)))
 
 (defun opencode-sessions--add (info)
@@ -135,7 +153,7 @@ parent is learned in turn."
                             (puthash session-id parent (opencode-sessions--table 'parents))
                             (opencode-sessions--learn parent))
                         (opencode-sessions--add info)
-                        (opencode-sessions--fetch-diff (opencode-sessions--directory info))))
+                        (opencode-sessions--fetch-changes session-id)))
                     (opencode-sessions--changed)))
        :error (lambda (&rest _args)
                 (when (eq tracker opencode-sessions--tracker)
@@ -260,16 +278,53 @@ More urgent sessions come first, then more recently updated ones."
               (propertize (format "-%d" (cdr diff)) 'face 'error))
     ""))
 
+(defun opencode-sessions--roots (session-id)
+  "Return the worktrees the listed session SESSION-ID changed, as far as known."
+  (when-let* ((work (gethash session-id (opencode-sessions--table 'changes))))
+    (opencode-sessions--work-roots work)))
+
+(defun opencode-sessions--diff (session-id)
+  "Return the (ADDED . DELETED) lines counted so far for SESSION-ID's worktrees."
+  (when-let* ((work (gethash session-id (opencode-sessions--table 'changes))))
+    (let ((stats (opencode-sessions--work-stats work))
+          diff)
+      (dolist (root (opencode-sessions--work-roots work) diff)
+        (when-let* ((counts (alist-get (opencode-changes-root-directory root) stats
+                                       nil nil #'equal)))
+          (setq diff (cons (+ (car counts) (or (car diff) 0))
+                           (+ (cdr counts) (or (cdr diff) 0)))))))))
+
+(defun opencode-sessions--format-directory (info)
+  "Return where session INFO worked: the worktrees it changed, else its directory.
+When it changed several, the one with the most changed lines comes first."
+  (let* ((work (gethash (alist-get 'id info) (opencode-sessions--table 'changes)))
+         (stats (and work (opencode-sessions--work-stats work)))
+         (size (lambda (root)
+                 (let ((counts (alist-get (opencode-changes-root-directory root) stats
+                                          nil nil #'equal)))
+                   (+ (or (car counts) 0) (or (cdr counts) 0)))))
+         (directories (mapcar (lambda (root)
+                                (abbreviate-file-name
+                                 (directory-file-name (opencode-changes-root-directory root))))
+                              (sort (copy-sequence (opencode-sessions--roots (alist-get 'id info)))
+                                    (lambda (a b) (> (funcall size a) (funcall size b)))))))
+    (cond
+     ((cdr directories)
+      (propertize (format "%s +%d" (car directories) (length (cdr directories)))
+                  'help-echo (string-join directories "\n")))
+     (directories (car directories))
+     ((opencode-sessions--directory info)
+      (abbreviate-file-name (opencode-sessions--directory info)))
+     (t ""))))
+
 (defun opencode-sessions--entry (info)
   "Return the tabulated list entry for session INFO."
-  (let* ((id (alist-get 'id info))
-         (directory (opencode-sessions--directory info)))
+  (let ((id (alist-get 'id info)))
     (list id
           (vector (opencode-sessions--format-state (opencode-sessions--state id))
                   (or (alist-get 'title info) "Untitled session")
-                  (if directory (abbreviate-file-name directory) "")
-                  (opencode-sessions--format-diff
-                   (gethash directory (opencode-sessions--table 'diffs)))
+                  (opencode-sessions--format-directory info)
+                  (opencode-sessions--format-diff (opencode-sessions--diff id))
                   (opencode-sessions--format-cost (alist-get 'cost info))
                   (opencode-sessions--format-age (alist-get 'updated (alist-get 'time info)))))))
 
@@ -296,7 +351,7 @@ Groups with more urgent sessions come first."
                     (mapcar #'opencode-sessions--entry (cdr group))))
             (sort groups (lambda (a b) (opencode-sessions--before-p (cadr a) (cadr b)))))))
 
-;;; Diff stats
+;;; Changes
 
 (defconst opencode-sessions--diff-script
   "branch=$(git symbolic-ref --short -q HEAD)
@@ -307,11 +362,24 @@ else
   base=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null)
 fi
 from=$(git merge-base HEAD \"$base\" 2>/dev/null) || from=HEAD
-exec git diff --shortstat \"$from\" 2>/dev/null"
+[ $# -eq 0 ] && exec git diff --shortstat \"$from\" 2>/dev/null
+scratch=$(mktemp -d) || exit 1
+trap 'rm -rf \"$scratch\"' EXIT
+git ls-files -z --others --exclude-standard -- \"$@\" >\"$scratch/new\" || exit 1
+if [ -s \"$scratch/new\" ]; then
+  index=$(git rev-parse --git-path index) || exit 1
+  if [ -f \"$index\" ]; then cp \"$index\" \"$scratch/index\" || exit 1; fi
+  export GIT_INDEX_FILE=\"$scratch/index\"
+  git -c core.splitIndex=false add --intent-to-add \\
+    --pathspec-from-file=\"$scratch/new\" --pathspec-file-nul >/dev/null 2>&1
+fi
+git diff --shortstat \"$from\" -- \"$@\" 2>/dev/null"
   "Shell script printing a worktree's changes since its base branch.
 The base is the upstream branch, unless that is the branch's own copy on
 a remote, in which case it is the remote's default branch.  Uncommitted
-changes to tracked files count too; untracked files do not.")
+changes count too.  The arguments are the files to count, or none for
+every tracked file.  Untracked files among them are added to a copy of
+the index, so they count while Git's own index stays untouched.")
 
 (defun opencode-sessions--parse-shortstat (output)
   "Return the (ADDED . DELETED) line counts in git diff --shortstat OUTPUT."
@@ -321,18 +389,17 @@ changes to tracked files count too; untracked files do not.")
                 0)))
     (cons (lines "insertion") (lines "deletion"))))
 
-(defun opencode-sessions--fetch-diff (directory &optional force)
-  "Count DIRECTORY's changes since its base branch with git.
-Directories already counted or being counted are skipped unless FORCE
-is non-nil."
+(defun opencode-sessions--count (work root)
+  "Count the changes in worktree ROOT since its base branch into WORK's stats.
+Only the files the session changed count, or every file when OpenCode
+recorded none.  The count is dropped when a newer one has started."
   (let ((tracker opencode-sessions--tracker)
-        (diffs (opencode-sessions--table 'diffs)))
-    (when (and directory
-               (file-directory-p directory)
-               (or force (not (gethash directory diffs))))
-      (unless (gethash directory diffs)
-        (puthash directory :pending diffs))
+        (generation (opencode-sessions--work-generation work))
+        (directory (opencode-changes-root-directory root)))
+    (when (file-directory-p directory)
       (let ((default-directory (file-name-as-directory directory))
+            (process-environment (append '("GIT_LITERAL_PATHSPECS=1" "GIT_OPTIONAL_LOCKS=0")
+                                         process-environment))
             (buffer (generate-new-buffer " *opencode-sessions-diff*")))
         (condition-case nil
             (make-process
@@ -340,20 +407,92 @@ is non-nil."
              :buffer buffer
              :noquery t
              :connection-type 'pipe
-             :command (list "sh" "-c" opencode-sessions--diff-script)
+             :command (append (list "sh" "-c" opencode-sessions--diff-script "sh")
+                              (opencode-changes-root-files root))
              :sentinel
              (lambda (process _event)
                (when (memq (process-status process) '(exit signal))
                  (unwind-protect
                      (when (and (eq tracker opencode-sessions--tracker)
+                                (= generation (opencode-sessions--work-generation work))
                                 (zerop (process-exit-status process)))
-                       (puthash directory
-                                (opencode-sessions--parse-shortstat
-                                 (with-current-buffer buffer (buffer-string)))
-                                diffs)
+                       (setf (alist-get directory (opencode-sessions--work-stats work)
+                                        nil nil #'equal)
+                             (opencode-sessions--parse-shortstat
+                              (with-current-buffer buffer (buffer-string))))
                        (opencode-sessions--changed))
                    (kill-buffer buffer)))))
           (error (kill-buffer buffer)))))))
+
+(defun opencode-sessions--count-all (work)
+  "Count the changes in each worktree in WORK."
+  (cl-incf (opencode-sessions--work-generation work))
+  (dolist (root (opencode-sessions--work-roots work))
+    (opencode-sessions--count work root)))
+
+(defun opencode-sessions--find-roots (session-id work)
+  "Look up the worktrees SESSION-ID and its subagents changed into WORK."
+  (let ((tracker opencode-sessions--tracker))
+    (cl-flet ((finish ()
+                (when (eq tracker opencode-sessions--tracker)
+                  (cl-decf (opencode-sessions--tracker-fetching tracker))
+                  (setf (opencode-sessions--work-loading work) nil)
+                  (when (opencode-sessions--work-again work)
+                    (setf (opencode-sessions--work-again work) nil)
+                    (opencode-sessions--fetch-changes session-id t))
+                  (opencode-sessions--start-fetches))))
+      (opencode-changes-fetch-tree
+       (opencode-sessions--tracker-connection tracker) session-id
+       (lambda (tree)
+         (unwind-protect
+             (when (eq tracker opencode-sessions--tracker)
+               (condition-case err
+                   (let ((roots (opencode-changes-roots (opencode-changes-tree-steps tree))))
+                     (setf (opencode-sessions--work-roots work) roots)
+                     (setf (opencode-sessions--work-updated work)
+                           (opencode-sessions--updated (caar tree)))
+                     (opencode-sessions--count-all work)
+                     (opencode-sessions--changed))
+                 (error (message "OpenCode: cannot find a session's changes: %s"
+                                 (error-message-string err)))))
+           (finish)))
+       (lambda () (finish))))))
+
+(defun opencode-sessions--start-fetches ()
+  "Start looking up queued sessions' changes, up to the concurrency limit."
+  (let ((tracker opencode-sessions--tracker))
+    (while (and (opencode-sessions--tracker-queue tracker)
+                (< (opencode-sessions--tracker-fetching tracker) opencode-sessions--max-fetches))
+      (pcase-let ((`(,id . ,work) (pop (opencode-sessions--tracker-queue tracker))))
+        (when (eq work (gethash id (opencode-sessions--table 'changes)))
+          (cl-incf (opencode-sessions--tracker-fetching tracker))
+          (opencode-sessions--find-roots id work))))))
+
+(defun opencode-sessions--fetch-changes (session-id &optional force)
+  "Find the worktrees the listed session SESSION-ID changed and count the changes.
+The worktrees are looked up from the session's messages when it was
+updated since they were last found, or when FORCE is non-nil.
+Otherwise only their changes are counted again.  Nothing is looked up
+while the overview buffer is closed, since only it shows changes."
+  (when-let* (((get-buffer opencode-sessions--buffer-name))
+              (info (gethash session-id (opencode-sessions--table 'sessions))))
+    (let ((work (with-memoization (gethash session-id (opencode-sessions--table 'changes))
+                  (opencode-sessions--work-create)))
+          (tracker opencode-sessions--tracker))
+      (cond
+       ((opencode-sessions--work-loading work)
+        (when force
+          (setf (opencode-sessions--work-again work) t)))
+       ((and (not force)
+             (opencode-sessions--work-updated work)
+             (>= (opencode-sessions--work-updated work) (opencode-sessions--updated info)))
+        (opencode-sessions--count-all work))
+       (t
+        (setf (opencode-sessions--work-loading work) t)
+        (setf (opencode-sessions--tracker-queue tracker)
+              (append (opencode-sessions--tracker-queue tracker)
+                      (list (cons session-id work))))
+        (opencode-sessions--start-fetches))))))
 
 ;;; Loading
 
@@ -456,10 +595,10 @@ Sessions that events added while the load ran are kept."
              (unless (or (gethash id loaded)
                          (>= (opencode-sessions--updated (gethash id sessions)) started))
                (remhash id sessions)))
-           (dolist (directory (delete-dups
-                               (mapcar #'opencode-sessions--directory
-                                       (hash-table-values sessions))))
-             (opencode-sessions--fetch-diff directory t)))
+           (dolist (id (hash-table-keys (opencode-sessions--table 'changes)))
+             (unless (gethash id sessions)
+               (remhash id (opencode-sessions--table 'changes))))
+           (mapc #'opencode-sessions--fetch-changes (hash-table-keys sessions)))
          (opencode-sessions--fetch-running)
          (opencode-sessions--changed))))))
 
@@ -490,7 +629,8 @@ Sessions that events added while the load ran are kept."
         ("session.deleted"
          (remhash session-id (opencode-sessions--table 'sessions))
          (remhash session-id (opencode-sessions--table 'parents))
-         (remhash session-id (opencode-sessions--table 'running)))
+         (remhash session-id (opencode-sessions--table 'running))
+         (remhash session-id (opencode-sessions--table 'changes)))
         ("session.renamed"
          (opencode-sessions--update session-id 'title (alist-get 'title payload)))
         ("session.moved"
@@ -498,9 +638,7 @@ Sessions that events added while the load ran are kept."
          (when-let* ((project-id (alist-get 'projectID payload)))
            (opencode-sessions--update session-id 'projectID project-id)
            (unless (gethash project-id (opencode-sessions--table 'projects))
-             (opencode-sessions--fetch-projects)))
-         (opencode-sessions--fetch-diff
-          (alist-get 'directory (alist-get 'location payload))))
+             (opencode-sessions--fetch-projects))))
         ("session.usage.updated"
          (opencode-sessions--update session-id 'cost (alist-get 'cost payload)))
         ("session.execution.started"
@@ -516,10 +654,7 @@ Sessions that events added while the load ran are kept."
          (remhash session-id (opencode-sessions--table 'running))
          (when-let* ((root (opencode-sessions--root session-id)))
            (opencode-sessions--refresh-info root)
-           (opencode-sessions--fetch-diff
-            (opencode-sessions--directory
-             (gethash root (opencode-sessions--table 'sessions)))
-            t)))
+           (opencode-sessions--fetch-changes root t)))
         ("session.viewed"
          (when-let* ((info (gethash session-id (opencode-sessions--table 'sessions))))
            (let ((time (copy-alist (alist-get 'time info)))
@@ -591,7 +726,9 @@ When already tracking and RELOAD is non-nil, load the sessions again."
    (lambda (connection)
      (cond
       ((not opencode-sessions--tracker) (opencode-sessions--start connection))
-      (reload (opencode-sessions--load)))
+      (reload (opencode-sessions--load))
+      (t (mapc #'opencode-sessions--fetch-changes
+               (hash-table-keys (opencode-sessions--table 'sessions)))))
      (opencode-sessions--render))))
 
 (defun opencode-sessions--stop-unless-needed (&optional closing-buffer)
