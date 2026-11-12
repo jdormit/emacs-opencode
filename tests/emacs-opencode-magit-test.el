@@ -488,6 +488,20 @@ FILES is an alist of (NAME . CONTENT).  DIRECTORY is scratch space."
         (push (current-buffer) buffers)
         (should (equal magit-buffer-diff-files '("a.txt")))))))
 
+(ert-deftest test-opencode-magit/context-in-session-overview ()
+  "In the session overview, the session at point is the current session."
+  (let ((opencode-sessions--tracker (opencode-sessions--tracker-create :connection 'conn)))
+    (opencode-sessions--add '((id . "s1") (title . "First")))
+    (with-temp-buffer
+      (opencode-sessions-mode)
+      (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda (&rest _) "s1")))
+        (should (equal (opencode-magit--context)
+                       '(:connection conn :session-id "s1" :title "First")))))))
+
+(ert-deftest test-opencode-magit/overview-diff-key ()
+  "In the session overview, `=' diffs the worktree of the session at point."
+  (should (eq (keymap-lookup opencode-sessions-mode-map "=") #'opencode-magit-diff)))
+
 (provide 'emacs-opencode-magit-test)
 
 ;;; emacs-opencode-magit-test.el ends here

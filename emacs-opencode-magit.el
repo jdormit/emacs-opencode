@@ -10,9 +10,11 @@
 (require 'emacs-opencode-session-vars)
 (require 'emacs-opencode-message)
 (require 'emacs-opencode-session-mode)
+(require 'emacs-opencode-sessions)
 
 (declare-function opencode--ensure-session-buffer "emacs-opencode"
                   (session connection &optional on-ready))
+(declare-function evil-define-key* "evil-core" (state keymap key def &rest bindings))
 
 (defvar-local opencode-magit--overview nil
   "Plist describing the session an overview buffer shows.
@@ -322,6 +324,11 @@ The plist has :connection, :session-id, and :title."
     (list :connection (plist-get opencode-magit--overview :connection)
           :session-id (plist-get opencode-magit--overview :session-id)
           :title (plist-get opencode-magit--overview :title)))
+   ((derived-mode-p 'opencode-sessions-mode)
+    (let ((info (opencode-sessions--info-at-point)))
+      (list :connection (opencode-sessions--connection)
+            :session-id (alist-get 'id info)
+            :title (or (alist-get 'title info) (alist-get 'id info)))))
    ((and (derived-mode-p 'opencode-session-mode) opencode-session--session)
     (unless opencode-session--connection
       (user-error "OpenCode session is not connected"))
@@ -751,6 +758,10 @@ changed."
   "t" #'opencode-magit-turn-diff)
 
 (keymap-set opencode-session-mode-map "C-c C-d" opencode-magit-map)
+(keymap-set opencode-sessions-mode-map "C-c C-d" opencode-magit-map)
+(keymap-set opencode-sessions-mode-map "=" #'opencode-magit-diff)
+(with-eval-after-load 'evil
+  (evil-define-key* 'normal opencode-sessions-mode-map "=" #'opencode-magit-diff))
 
 (provide 'emacs-opencode-magit)
 

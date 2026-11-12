@@ -29,9 +29,8 @@ hook so users can wire it to whatever update flow they prefer.
 E.g. "OpenCode wants to rg foobar .*" or "OpenCode wants to foo/bar/baz.txt".
 What do those mean?
 
-* TODO Overview buffers (sessions/projects)
-- List-returning functions for sessions/projects.
-- Thin rendering buffer(s) + completion integration.
+* DONE Overview buffers (sessions/projects)
+=opencode-sessions= and =opencode-sessions-indicator-mode=.
 
 * TODO Session management commands
 - Load session, fork, delete, rename.

@@ -255,6 +255,59 @@ input is preserved across the re-render."
                          (message "OpenCode: failed to rename session%s"
                                   (if detail (format " (%s)" detail) ""))))))))))))
 
+(defun opencode-session--archived-p ()
+  "Return non-nil when this buffer's session is archived."
+  (alist-get 'archived (alist-get 'time (opencode-session-info opencode-session--session))))
+
+(defun opencode-session--set-archived (time)
+  "Record TIME as when this buffer's session was archived, or nil when restored."
+  (when opencode-session--session
+    (let* ((info (copy-alist (opencode-session-info opencode-session--session)))
+           (times (assq-delete-all 'archived (copy-alist (alist-get 'time info)))))
+      (setf (alist-get 'time info) (if time (cons (cons 'archived time) times) times))
+      (setf (opencode-session-info opencode-session--session) info))))
+
+(defun opencode-session--archive (archived)
+  "Archive this buffer's session when ARCHIVED is non-nil, else restore it."
+  (unless (derived-mode-p 'opencode-session-mode)
+    (user-error "Not in an OpenCode session buffer"))
+  (unless opencode-session--session
+    (user-error "OpenCode session is not connected"))
+  (let ((buffer (current-buffer))
+        (session-id (or (opencode-session-id opencode-session--session)
+                        (user-error "OpenCode session ID is missing"))))
+    (opencode-session--ensure-connection
+     (lambda (connection)
+       (opencode-client-session-archive
+        connection session-id archived
+        :success (lambda (&rest _args)
+                   (when (buffer-live-p buffer)
+                     (with-current-buffer buffer
+                       (opencode-session--set-archived
+                        (and archived (truncate (* 1000 (float-time)))))))
+                   (message (if archived
+                                "OpenCode session archived; M-x opencode-session-unarchive restores it"
+                              "OpenCode session restored")))
+        :error (lambda (&rest args)
+                 (let ((detail (opencode-client-format-error args)))
+                   (message "OpenCode: failed to %s session%s"
+                            (if archived "archive" "restore")
+                            (if detail (format " (%s)" detail) "")))))))))
+
+;;;###autoload
+(defun opencode-session-archive ()
+  "Archive the current OpenCode session, hiding it from session lists.
+Unlike deleting, archiving keeps the session; `opencode-session-unarchive'
+restores it."
+  (interactive)
+  (opencode-session--archive t))
+
+;;;###autoload
+(defun opencode-session-unarchive ()
+  "Restore the current OpenCode session from the archive."
+  (interactive)
+  (opencode-session--archive nil))
+
 ;;;###autoload
 (defun opencode-session-compact ()
   "Compact the current OpenCode session."

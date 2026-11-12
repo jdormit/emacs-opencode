@@ -150,23 +150,37 @@ permission rules evaluated after the agent's own."
    :success (opencode-client--unwrap success)
    :error error))
 
-(cl-defmethod opencode-client-sessions ((conn opencode-connection) &key success error limit roots parent project directory)
-  "Fetch OpenCode sessions, newest first.
+(cl-defmethod opencode-client-sessions ((conn opencode-connection) &key success error limit roots parent project directory archived cursor)
+  "Fetch OpenCode sessions, most recently updated first.
 
 LIMIT restricts the number of returned sessions.  When ROOTS is non-nil,
 return only sessions without a parent; PARENT instead returns the children
 of that session ID.  PROJECT restricts results to a project ID and
-DIRECTORY to an exact session directory."
+DIRECTORY to an exact session directory.  ARCHIVED is `:exclude' to omit
+archived sessions or `:only' to return only those.  CURSOR, from an
+earlier response, fetches the next page; its filters override ROOTS,
+PARENT, PROJECT, DIRECTORY and ARCHIVED.  SUCCESS also receives the next
+page's cursor as :cursor."
   (opencode-request
    conn
    'GET
    "/api/session"
-   :params (append (cond (parent `(("parentID" . ,parent)))
+   :params (append (cond (cursor `(("cursor" . ,cursor)))
+                         (parent `(("parentID" . ,parent)))
                          (roots '(("parentID" . "null"))))
                    (when limit `(("limit" . ,limit)))
-                   (when project `(("project" . ,project)))
-                   (when directory `(("directory" . ,directory))))
-   :success (opencode-client--unwrap success)
+                   (when (and project (not cursor)) `(("project" . ,project)))
+                   (when (and directory (not cursor)) `(("directory" . ,directory)))
+                   (when (and archived (not cursor))
+                     `(("archived" . ,(if (eq archived :only) "true" "false")))))
+   :success (when success
+              (lambda (&rest args)
+                (let ((body (plist-get args :data)))
+                  (apply success
+                         (plist-put (plist-put (copy-sequence args)
+                                               :data (and (listp body) (alist-get 'data body)))
+                                    :cursor (and (listp body)
+                                                 (alist-get 'next (alist-get 'cursor body))))))))
    :error error))
 
 (cl-defmethod opencode-client-session-active ((conn opencode-connection) &key success error)
@@ -176,6 +190,60 @@ The data is an alist keyed by session ID."
    conn
    'GET
    "/api/session/active"
+   :success (opencode-client--unwrap success)
+   :error error))
+
+(cl-defmethod opencode-client-session-delete ((conn opencode-connection) session-id &key success error)
+  "Delete SESSION-ID along with its child sessions."
+  (opencode-request
+   conn
+   'DELETE
+   (opencode-client--path "/api/session/%s" session-id)
+   :parser #'opencode-client--no-content
+   :success success
+   :error error))
+
+(cl-defmethod opencode-client-session-archive ((conn opencode-connection) session-id archived &key success error)
+  "Archive SESSION-ID when ARCHIVED is non-nil, else restore it."
+  (opencode-request
+   conn
+   'PATCH
+   (opencode-client--path "/api/session/%s" session-id)
+   :json `((archived . ,(if archived t :json-false)))
+   :parser #'opencode-client--no-content
+   :success success
+   :error error))
+
+(cl-defmethod opencode-client-session-view ((conn opencode-connection) session-id idle &key success error)
+  "Mark SESSION-ID as viewed up to IDLE, its idle time in epoch milliseconds."
+  (opencode-request
+   conn
+   'POST
+   (opencode-client--path "/api/session/%s/view" session-id)
+   :json `((idle . ,idle))
+   :parser #'opencode-client--no-content
+   :success success
+   :error error))
+
+(cl-defmethod opencode-client-projects ((conn opencode-connection) &key success error)
+  "Fetch the projects the server knows about."
+  (opencode-request conn 'GET "/api/project" :success success :error error))
+
+(cl-defmethod opencode-client-session-permissions ((conn opencode-connection) session-id &key success error)
+  "Fetch the pending permission requests of SESSION-ID."
+  (opencode-request
+   conn
+   'GET
+   (opencode-client--path "/api/session/%s/permission" session-id)
+   :success (opencode-client--unwrap success)
+   :error error))
+
+(cl-defmethod opencode-client-session-forms ((conn opencode-connection) session-id &key success error)
+  "Fetch the pending forms of SESSION-ID."
+  (opencode-request
+   conn
+   'GET
+   (opencode-client--path "/api/session/%s/form" session-id)
    :success (opencode-client--unwrap success)
    :error error))
 

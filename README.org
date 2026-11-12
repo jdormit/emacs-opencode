@@ -103,6 +103,11 @@ They support:
   with =C-c C-t= when the OpenCode server has reasoning parts for the session.
 - Rename the current session with =M-x opencode-session-rename=. The session
   buffer and header update to use the new title.
+- Archive the current session with =M-x opencode-session-archive=. Archived
+  sessions are kept but hidden from the session overview and from the
+  OpenCode TUI and web app. =M-x opencode-open-session= still lists them,
+  marked =[archived]= and sorted last; open one and run
+  =M-x opencode-session-unarchive= to restore it.
 - Compact a session on demand with =C-c C-x=. Compaction keeps the transcript
   visible in the buffer and inserts a boundary marker showing where earlier
   messages were summarized for future model context.
@@ -131,6 +136,7 @@ include the 10 lines around point plus file and line metadata when available.
 | =opencode-ask=                     | New session with a prompt                   |
 | =opencode-ask-contextual=          | New session with prompt + buffer context    |
 | =opencode-open-session=            | Open an existing session                    |
+| =opencode-sessions=                | List sessions across all projects           |
 | =opencode-send-to-session=         | Send a prompt to an existing session        |
 | =opencode-send-context-to-session= | Send prompt + context to an existing session |
 | =opencode-mcp-status=              | Show current OpenCode MCP server status     |
@@ -164,11 +170,68 @@ All commands auto-detect the current project root. Use a prefix argument
 Under =evil-mode=, =TAB= and =S-TAB= (or =<backtab>=) cycle to the next and
 previous agent in normal and insert states.
 
+** Session Overview
+
+=M-x opencode-sessions= lists recent sessions from every project, grouped by
+project (on Emacs 30 and later). Each row shows the session's status, title,
+directory, the lines its worktree changed since the base branch, cost, and
+when it was last updated. Changes count uncommitted edits but not untracked
+files. The list updates as sessions run.
+
+A session's status counts its subagents:
+
+| Status       | Meaning                                                  |
+|--------------+----------------------------------------------------------|
+| =permission= | A permission request is waiting on you                   |
+| =question=   | A question is waiting on you                             |
+| =failed=     | The last run failed, and you haven't looked yet          |
+| =done=       | The last run finished, and you haven't looked yet        |
+| =stopped=    | The last run was interrupted, and you haven't looked yet |
+| =retrying=   | The model request failed and will be retried             |
+| =running=    | The session is running                                   |
+
+Sessions waiting on you come first, then finished runs, then running sessions.
+Selecting a session's buffer marks its last run as seen, for every OpenCode
+client.
+
+| Key   | Action                                                     |
+|-------+------------------------------------------------------------|
+| =RET= | Open the session                                           |
+| =o=   | Open the session in another window                         |
+| =C-o= | Show the session in another window without selecting it    |
+| =R=   | Rename the session                                         |
+| =c=   | Start a new session in the same project                    |
+| =d=   | Flag the session for deletion                              |
+| =a=   | Flag the session for archiving                             |
+| =u=   | Remove the flag (=DEL=: from the previous session)         |
+| =U=   | Remove every flag                                          |
+| =x=   | Archive and delete the flagged sessions                    |
+| ===   | Diff the session's worktree (needs =emacs-opencode-magit=) |
+| =g=   | Reload the list                                            |
+
+As in Dired, flagged sessions show =D= (delete) or =A= (archive), and nothing
+happens until you press =x= and confirm. Deleting also deletes a session's
+subagent sessions and can't be undone. Archiving hides a session but keeps
+it, so it can be restored.
+
+Under =evil-mode=, these keys work in normal state, except for keys Evil uses
+for motions: =go= opens in another window, =gO= shows a session without
+selecting it, and =gr= reloads.
+
+The overview lists sessions updated in the last =opencode-sessions-days= days
+(default 7), up to =opencode-sessions-max= sessions (default 1000). Running
+sessions are always listed. After =x= deletes sessions, the list reloads.
+
+To see in the mode line how many sessions are waiting on you, running, or
+finished but unseen, turn on =opencode-sessions-indicator-mode=. Clicking the
+indicator opens the overview. Turning the mode on connects to OpenCode.
+
 ** Magit Integration
 
 =emacs-opencode-magit= is optional and needs Magit. Load it with
 =(require 'emacs-opencode-magit)=; it binds its commands under =C-c C-d= in
-session buffers.
+session buffers and the session overview, where they act on the session at
+point.
 
 These commands find every worktree the session and its subagents changed,
 including worktrees they moved into or edited by path. When there are several,
@@ -249,6 +312,8 @@ Options and faces are in the =emacs-opencode= customize group. Common options:
 |------------------------------------------+-------------------+------------------------------------------|
 | =opencode-server-command=                | ="opencode"=      | Executable name or path                  |
 | =opencode-session-list-limit=            | =1000=            | Max sessions requested for completion    |
+| =opencode-sessions-days=                 | =7=               | Days of sessions listed in the overview  |
+| =opencode-sessions-max=                  | =1000=            | Max sessions listed in the overview      |
 | =opencode-session-default-agent=         | ="plan"=          | Default agent for new sessions           |
 | =opencode-session-default-variant=       | =nil=             | Default model variant                    |
 | =opencode-session-oauth-poll-interval=   | =2=               | Seconds between browser sign-in checks   |

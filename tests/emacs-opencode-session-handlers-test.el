@@ -438,6 +438,14 @@
            (list :connection connection)))
         (should-not handled)))))
 
+(ert-deftest test-opencode-handlers/archive-events-update-session ()
+  "Archive and restore events from any client update the session's info."
+  (opencode-handlers-test--with-session
+    (opencode-handlers-test--dispatch "session.archived" '((sessionID . "s1")))
+    (should (opencode-session--archived-p))
+    (opencode-handlers-test--dispatch "session.unarchived" '((sessionID . "s1")))
+    (should-not (opencode-session--archived-p))))
+
 ;;; Subagents
 
 (ert-deftest test-opencode-handlers/subagent-tool-calls-update-parent ()

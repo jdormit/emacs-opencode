@@ -277,6 +277,87 @@ last `request' call made during BODY."
       (should (equal (plist-get args :type) "POST"))
       (should (equal (plist-get args :data) "{}")))))
 
+;;; sessions paging
+
+(ert-deftest test-opencode-client/sessions-pass-next-cursor ()
+  "Listing sessions gives the callback the page and the next page's cursor."
+  (let ((conn (opencode-client-test--connection "/tmp/project/"))
+        result)
+    (opencode-client-test--with-captured-request _url args
+      (opencode-client-sessions conn :roots t :limit 5
+                                :success (lambda (&rest cb-args) (setq result cb-args)))
+      (should (equal (plist-get args :params) '(("parentID" . "null") ("limit" . 5))))
+      (funcall (plist-get args :success)
+               :data '((data . (((id . "s1")))) (cursor . ((next . "c2"))))))
+    (should (equal (plist-get result :data) '(((id . "s1")))))
+    (should (equal (plist-get result :cursor) "c2"))))
+
+(ert-deftest test-opencode-client/sessions-archived-filter ()
+  "ARCHIVED filters by archive state: :exclude omits archived sessions."
+  (let ((conn (opencode-client-test--connection "/tmp/project/")))
+    (opencode-client-test--with-captured-request _url args
+      (opencode-client-sessions conn :roots t :archived :exclude :success #'ignore)
+      (should (equal (plist-get args :params) '(("parentID" . "null") ("archived" . "false"))))
+      (opencode-client-sessions conn :archived :only :success #'ignore)
+      (should (equal (plist-get args :params) '(("archived" . "true")))))))
+
+(ert-deftest test-opencode-client/sessions-cursor-replaces-query ()
+  "A cursor request sends the cursor, which carries the filters, and the page size."
+  (let ((conn (opencode-client-test--connection "/tmp/project/")))
+    (opencode-client-test--with-captured-request _url args
+      (opencode-client-sessions conn :roots t :limit 5 :cursor "c2"
+                                :success #'ignore)
+      (should (equal (plist-get args :params) '(("cursor" . "c2") ("limit" . 5)))))))
+
+;;; session-delete and session-view
+
+(ert-deftest test-opencode-client/session-delete ()
+  "Deleting a session sends DELETE to the session route."
+  (let ((conn (opencode-client-test--connection "/tmp/project/")))
+    (opencode-client-test--with-captured-request url args
+      (opencode-client-session-delete conn "ses_1" :success #'ignore :error #'ignore)
+      (should (equal url "http://127.0.0.1:4096/api/session/ses_1"))
+      (should (equal (plist-get args :type) "DELETE")))))
+
+(ert-deftest test-opencode-client/session-archive ()
+  "Archiving patches the session's archived flag; restoring sends false."
+  (let ((conn (opencode-client-test--connection "/tmp/project/")))
+    (opencode-client-test--with-captured-request url args
+      (opencode-client-session-archive conn "ses_1" t :success #'ignore :error #'ignore)
+      (should (equal url "http://127.0.0.1:4096/api/session/ses_1"))
+      (should (equal (plist-get args :type) "PATCH"))
+      (should (equal (plist-get args :data) "{\"archived\":true}"))
+      (opencode-client-session-archive conn "ses_1" nil :success #'ignore :error #'ignore)
+      (should (equal (plist-get args :data) "{\"archived\":false}")))))
+
+(ert-deftest test-opencode-client/session-view-sends-idle ()
+  "Viewing a session posts the idle watermark the user saw."
+  (let ((conn (opencode-client-test--connection "/tmp/project/")))
+    (opencode-client-test--with-captured-request url args
+      (opencode-client-session-view conn "ses_1" 1700 :success #'ignore :error #'ignore)
+      (should (equal url "http://127.0.0.1:4096/api/session/ses_1/view"))
+      (should (equal (plist-get args :type) "POST"))
+      (should (equal (plist-get args :data) (json-encode '((idle . 1700))))))))
+
+(ert-deftest test-opencode-client/session-pending-prompts ()
+  "A session's pending permissions and forms come from its own routes."
+  (let ((conn (opencode-client-test--connection "/tmp/project/")))
+    (opencode-client-test--with-captured-request url _args
+      (opencode-client-session-permissions conn "ses_1" :success #'ignore :error #'ignore)
+      (should (equal url "http://127.0.0.1:4096/api/session/ses_1/permission"))
+      (opencode-client-session-forms conn "ses_1" :success #'ignore :error #'ignore)
+      (should (equal url "http://127.0.0.1:4096/api/session/ses_1/form")))))
+
+;;; projects
+
+(ert-deftest test-opencode-client/projects ()
+  "Projects are listed from the project route."
+  (let ((conn (opencode-client-test--connection "/tmp/project/")))
+    (opencode-client-test--with-captured-request url args
+      (opencode-client-projects conn :success #'ignore :error #'ignore)
+      (should (equal url "http://127.0.0.1:4096/api/project"))
+      (should (equal (plist-get args :type) "GET")))))
+
 ;;; agent and model switching
 
 (ert-deftest test-opencode-client/session-switch-agent ()

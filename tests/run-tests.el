@@ -21,6 +21,7 @@
 (require 'emacs-opencode-session-header-test)
 (require 'emacs-opencode-session-fontify-test)
 (require 'emacs-opencode-session-model-test)
+(require 'emacs-opencode-sessions-test)
 
 ;; The Magit integration is optional, so its tests need Magit on the load path.
 (when (locate-library "magit")

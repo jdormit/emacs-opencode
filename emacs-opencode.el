@@ -8,6 +8,7 @@
 (require 'emacs-opencode-run)
 (require 'emacs-opencode-session)
 (require 'emacs-opencode-session-mode)
+(require 'emacs-opencode-sessions)
 
 (defgroup emacs-opencode nil
   "Emacs client for the OpenCode server."
@@ -39,12 +40,23 @@ uses the server default."
 (defun opencode--session-label (info &optional include-identifiers)
   "Return a display label for session INFO.
 
-When INCLUDE-IDENTIFIERS is non-nil, include the session ID."
+When INCLUDE-IDENTIFIERS is non-nil, include the session ID.  Archived
+sessions are labeled as such."
   (let ((title (or (alist-get 'title info) "Untitled session"))
         (session-id (alist-get 'id info)))
-    (if (and include-identifiers session-id)
-        (format "%s [%s]" title session-id)
-      title)))
+    (concat (if (and include-identifiers session-id)
+                (format "%s [%s]" title session-id)
+              title)
+            (when (opencode--archived-p info) " [archived]"))))
+
+(defun opencode--archived-p (info)
+  "Return non-nil when session INFO is archived."
+  (alist-get 'archived (alist-get 'time info)))
+
+(defun opencode--archived-last (items)
+  "Return session ITEMS with archived sessions moved to the end, keeping order."
+  (append (cl-remove-if #'opencode--archived-p items)
+          (cl-remove-if-not #'opencode--archived-p items)))
 
 (defun opencode--session-items (data)
   "Normalize session list DATA into a list."
@@ -140,7 +152,8 @@ ON-SELECTED with the selected session and session info data."
                      (items (cl-remove-if
                              (lambda (item) (alist-get 'parentID item))
                              (opencode--session-items data)))
-                     (ordered-items (opencode--order-sessions-by-buffer items))
+                     (ordered-items (opencode--archived-last
+                                     (opencode--order-sessions-by-buffer items)))
                      (choices (opencode--session-choices ordered-items))
                      (table (lambda (string pred action)
                               (if (eq action 'metadata)

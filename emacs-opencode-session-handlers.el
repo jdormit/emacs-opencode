@@ -13,6 +13,7 @@
 (declare-function opencode-session--update-status "emacs-opencode-session-mode")
 (declare-function opencode-session--refresh-status "emacs-opencode-session-mode")
 (declare-function opencode-session--set-title "emacs-opencode-session-mode")
+(declare-function opencode-session--set-archived "emacs-opencode-session-mode")
 (declare-function opencode-session--render-header "emacs-opencode-session-header")
 (declare-function opencode-session--find-message "emacs-opencode-session-mode")
 (declare-function opencode-session--add-message "emacs-opencode-session-mode")
@@ -194,6 +195,13 @@ filter."
   (let ((payload (opencode-session--event-data data)))
     (opencode-session--with-session-buffer (alist-get 'sessionID payload)
       (opencode-session--set-title (alist-get 'title payload)))))
+
+(defun opencode-session--handle-session-archived (event data &optional _meta)
+  "Handle session.archived or session.unarchived EVENT DATA."
+  (opencode-session--with-session-buffer (alist-get 'sessionID (opencode-session--event-data data))
+    (opencode-session--set-archived
+     (and (equal event "session.archived")
+          (or (alist-get 'created data) (truncate (* 1000 (float-time))))))))
 
 (defun opencode-session--tracked-session-p (session-id)
   "Return non-nil when SESSION-ID is shown in a buffer or is a known subagent."
@@ -1084,6 +1092,7 @@ the announcement while disconnected, asks the server for them."
   '((opencode-session--handle-server-connected "server.connected")
     (opencode-session--handle-session-renamed "session.renamed")
     (opencode-session--handle-session-moved "session.moved")
+    (opencode-session--handle-session-archived "session.archived" "session.unarchived")
     (opencode-session--handle-agent-selected "session.agent.selected")
     (opencode-session--handle-model-selected "session.model.selected")
     (opencode-session--handle-usage-updated "session.usage.updated")

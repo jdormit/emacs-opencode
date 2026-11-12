@@ -395,6 +395,58 @@ Successive command list fetches return successive COMMAND-LISTS; an
 
 ;;; rename command
 
+(defun opencode-session-mode-test--archive (command info)
+  "Run archive COMMAND in a session buffer whose session has INFO.
+Return a plist with the :sent archived value, if any, and the :info the
+session has afterwards."
+  (let ((buffer (generate-new-buffer "*OpenCode: Archive*"))
+        (sent :none))
+    (unwind-protect
+        (with-current-buffer buffer
+          (opencode-session-mode)
+          (setq-local opencode-session--session
+                      (opencode-session--session-from-info info))
+          (cl-letf (((symbol-function 'opencode-session--ensure-connection)
+                     (lambda (callback) (funcall callback 'conn)))
+                    ((symbol-function 'message) #'ignore)
+                    ((symbol-function 'opencode-client-session-archive)
+                     (lambda (_connection session-id archived &rest args)
+                       (should (equal session-id "s1"))
+                       (setq sent archived)
+                       (funcall (plist-get args :success)))))
+            (condition-case nil
+                (funcall command)
+              (user-error (setq sent :user-error))))
+          (list :sent sent :info (opencode-session-info opencode-session--session)))
+      (kill-buffer buffer))))
+
+(ert-deftest test-opencode-session-mode/archive-marks-session-archived ()
+  "Archiving sends the request and records the archive time."
+  (let ((result (opencode-session-mode-test--archive
+                 #'opencode-session-archive '((id . "s1") (time . ((created . 1)))))))
+    (should (eq (plist-get result :sent) t))
+    (should (numberp (alist-get 'archived (alist-get 'time (plist-get result :info)))))))
+
+(ert-deftest test-opencode-session-mode/unarchive-restores-session ()
+  "Restoring sends the request and clears the archive time."
+  (let ((result (opencode-session-mode-test--archive
+                 #'opencode-session-unarchive
+                 '((id . "s1") (time . ((created . 1) (archived . 5)))))))
+    (should (eq (plist-get result :sent) nil))
+    (should-not (alist-get 'archived (alist-get 'time (plist-get result :info))))))
+
+(ert-deftest test-opencode-session-mode/archive-ignores-stale-local-state ()
+  "The commands always ask the server, since the buffer's copy may be stale."
+  (should (eq (plist-get (opencode-session-mode-test--archive
+                          #'opencode-session-archive
+                          '((id . "s1") (time . ((archived . 5)))))
+                         :sent)
+              t))
+  (should (eq (plist-get (opencode-session-mode-test--archive
+                          #'opencode-session-unarchive '((id . "s1") (time . ((created . 1)))))
+                         :sent)
+              nil)))
+
 (ert-deftest test-opencode-session-mode/rename-updates-session-and-buffer-name ()
   "The rename command sends and applies the new session title."
   (let ((buffer (generate-new-buffer "*OpenCode: Old title*")))

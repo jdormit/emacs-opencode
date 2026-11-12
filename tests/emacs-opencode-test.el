@@ -51,6 +51,25 @@
   (should (equal (opencode--session-label '((title . "Hello")))
                  "Hello")))
 
+(ert-deftest test-opencode/session-label-archived ()
+  "Archived sessions are labeled as such."
+  (should (equal (opencode--session-label '((title . "Hello") (time . ((archived . 5)))))
+                 "Hello [archived]"))
+  (should (equal (opencode--session-label '((title . "Hello") (id . "s1")
+                                            (time . ((archived . 5))))
+                                          t)
+                 "Hello [s1] [archived]")))
+
+(ert-deftest test-opencode/archived-sessions-sort-last ()
+  "Archived sessions come after the others, which keep their order."
+  (let ((items '(((id . "a") (time . ((archived . 5))))
+                 ((id . "b"))
+                 ((id . "c") (time . ((archived . 6))))
+                 ((id . "d")))))
+    (should (equal (mapcar (lambda (item) (alist-get 'id item))
+                           (opencode--archived-last items))
+                   '("b" "d" "a" "c")))))
+
 (ert-deftest test-opencode/session-label-untitled ()
   "Use fallback for missing title."
   (should (equal (opencode--session-label '((id . "s1")))
