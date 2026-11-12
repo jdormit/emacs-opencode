@@ -141,6 +141,29 @@
   (should-not (opencode-session--table-separator-line-p "| a | b |"))
   (should-not (opencode-session--table-separator-line-p "not a table")))
 
+(ert-deftest test-opencode-fontify/table-wrapped-header ()
+  "Every line above the first separator is a header line."
+  (with-temp-buffer
+    (insert (propertize (string-join '("| Long  |"
+                                       "| title |"
+                                       "| ----- |"
+                                       "| body  |"
+                                       "| ----- |"
+                                       "| more  |")
+                                     "\n")
+                        'opencode-part-type "assistant-text"))
+    (goto-char (point-min))
+    (opencode-session--fontify-tables (line-end-position))
+    (dolist (word '("Long" "title"))
+      (goto-char (point-min))
+      (search-forward word)
+      (should (eq (get-text-property (match-beginning 0) 'face)
+                  'opencode-markdown-table-header-face)))
+    (dolist (word '("body" "more"))
+      (goto-char (point-min))
+      (search-forward word)
+      (should-not (get-text-property (match-beginning 0) 'face)))))
+
 (ert-deftest test-opencode-fontify/table-faces-exist ()
   "Table faces are defined."
   (should (facep 'opencode-markdown-table-delimiter-face))

@@ -97,6 +97,7 @@ Each function receives SESSION and INPUT as arguments.")
   (setq-local opencode-session--variant nil)
   (setq-local opencode-session--show-reasoning opencode-session-show-reasoning)
   (opencode-session--ensure-markers)
+  (add-hook 'window-size-change-functions #'opencode-session--schedule-table-refit nil t)
   (add-hook 'completion-at-point-functions
             #'opencode-session--completion-at-point
             nil

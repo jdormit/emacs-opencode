@@ -633,6 +633,124 @@
   "Empty string passes through."
   (should (equal (opencode-session--align-markdown-tables "") "")))
 
+(ert-deftest test-opencode-render/wrap-table-cell ()
+  "Cell text wraps at word boundaries and breaks overlong words."
+  (should (equal (opencode-session--wrap-table-cell "the quick brown" 9)
+                 '("the quick" "brown")))
+  (should (equal (opencode-session--wrap-table-cell "abcdefghij" 4)
+                 '("abcd" "efgh" "ij")))
+  (should (equal (opencode-session--wrap-table-cell "" 4) '("")))
+  (should (equal (opencode-session--wrap-table-cell "run `a b` now" 7)
+                 '("run" "`a b`" "now")))
+  (should (equal (opencode-session--wrap-table-cell "a ` b" 3)
+                 '("a `" "b"))))
+
+(ert-deftest test-opencode-render/align-skips-code-blocks ()
+  "Pipe-delimited lines inside fenced code blocks are left alone."
+  (let ((input "```\n| a | the quick brown fox |\n```"))
+    (should (equal (opencode-session--align-markdown-tables input 10) input))))
+
+(ert-deftest test-opencode-render/fit-table-widths ()
+  "Only the columns too wide for an even share are narrowed."
+  (should (equal (opencode-session--fit-table-widths '(3 19) 22) '(3 12)))
+  (should (equal (opencode-session--fit-table-widths '(3 19) 40) '(3 19)))
+  (should (equal (opencode-session--fit-table-widths '(20 20 3) 30) '(9 8 3)))
+  (should (equal (opencode-session--fit-table-widths '(20 20) 5) '(3 3))))
+
+(ert-deftest test-opencode-render/align-wraps-to-max-width ()
+  "Tables wider than MAX-WIDTH wrap cells and separate body rows."
+  (let ((input "| Key | Description |\n|---|---|\n| a | the quick brown fox |\n| b | ok |"))
+    (should (equal (opencode-session--align-markdown-tables input 22)
+                   (string-join '("| Key | Description  |"
+                                  "| --- | ------------ |"
+                                  "| a   | the quick    |"
+                                  "|     | brown fox    |"
+                                  "| --- | ------------ |"
+                                  "| b   | ok           |")
+                                "\n")))))
+
+(ert-deftest test-opencode-render/align-fitting-table-ignores-max-width ()
+  "Tables that already fit render the same as without a limit."
+  (let ((input "| Name | Age |\n|---|---|\n| Alice | 30 |"))
+    (should (equal (opencode-session--align-markdown-tables input 80)
+                   (opencode-session--align-markdown-tables input)))))
+
+(ert-deftest test-opencode-render/refit-tables-on-width-change ()
+  "Messages containing tables re-render only when the width changes."
+  (let* ((marker (with-temp-buffer (point-marker)))
+         (table (opencode-message-create
+                 :role "assistant" :start-marker marker
+                 :parts (list (cons "p1" (opencode-message-part-create
+                                          :type "text" :text "| a | b |\n|---|---|")))))
+         (plain (opencode-message-create
+                 :role "assistant" :start-marker marker
+                 :parts (list (cons "p2" (opencode-message-part-create
+                                          :type "text" :text "no table")))))
+         (width 80)
+         rendered)
+    (with-temp-buffer
+      (setq-local opencode-session--messages (list table plain))
+      (cl-letf (((symbol-function 'opencode-session--table-max-width)
+                 (lambda () width))
+                ((symbol-function 'opencode-session--render-message)
+                 (lambda (message) (push message rendered))))
+        (opencode-session--refit-tables (current-buffer))
+        (should (equal rendered (list table)))
+        (setq rendered nil)
+        (opencode-session--refit-tables (current-buffer))
+        (should-not rendered)
+        (setq width 40)
+        (opencode-session--refit-tables (current-buffer))
+        (should (equal rendered (list table)))))))
+
+(ert-deftest test-opencode-render/refit-after-hidden-render ()
+  "A table rendered with no window showing the buffer is refit later."
+  (let* ((part (opencode-message-part-create
+                :type "text" :text "| a | b |\n|---|---|"))
+         (message (opencode-message-create
+                   :role "assistant" :start-marker (with-temp-buffer (point-marker))
+                   :parts (list (cons "p1" part))))
+         (width 80)
+         rendered)
+    (with-temp-buffer
+      (setq-local opencode-session--messages (list message))
+      (setq-local opencode-session--table-width 80)
+      (cl-letf (((symbol-function 'opencode-session--table-max-width)
+                 (lambda () width)))
+        (setq width nil)
+        (opencode-session--render-message-part message part)
+        (setq width 80)
+        (cl-letf (((symbol-function 'opencode-session--render-message)
+                   (lambda (message) (push message rendered))))
+          (opencode-session--refit-tables (current-buffer)))
+        (should (equal rendered (list message)))))))
+
+(ert-deftest test-opencode-render/schedule-table-refit-debounces ()
+  "Scheduling a refit replaces any pending refit for the buffer."
+  (with-temp-buffer
+    (set-window-buffer (selected-window) (current-buffer))
+    (unwind-protect
+        (progn
+          (opencode-session--schedule-table-refit (selected-window))
+          (let ((first opencode-session--table-refit-timer))
+            (should (timerp first))
+            (opencode-session--schedule-table-refit (selected-window))
+            (should-not (memq first timer-idle-list))
+            (should (memq opencode-session--table-refit-timer timer-idle-list))))
+      (cancel-timer opencode-session--table-refit-timer))))
+
+(ert-deftest test-opencode-render/text-part-tables-fit-window ()
+  "Text parts wrap tables to the width of the window showing the buffer."
+  (let ((message (opencode-message-create :role "assistant"))
+        (part (opencode-message-part-create
+               :type "text"
+               :text "| Key | Description |\n|---|---|\n| a | the quick brown fox |")))
+    (cl-letf (((symbol-function 'opencode-session--table-max-width)
+               (lambda () 22)))
+      (let ((rendered (opencode-session--render-message-part message part)))
+        (dolist (line (split-string rendered "\n"))
+          (should (<= (string-width line) 22)))))))
+
 ;;; retry-banner-text
 
 (ert-deftest test-opencode-render/retry-banner-text-non-retry ()

@@ -262,15 +262,113 @@ Each cell is left-aligned and padded with spaces."
     (dotimes (i (length widths))
       (let* ((cell (or (nth i cells) ""))
              (w (nth i widths))
-             (padded (concat cell (make-string (max 0 (- w (length cell))) ?\s))))
+             (padded (concat cell (make-string (max 0 (- w (string-width cell))) ?\s))))
         (push padded parts)))
     (concat "| " (mapconcat #'identity (nreverse parts) " | ") " |")))
 
-(defun opencode-session--align-markdown-tables (text)
+(defun opencode-session--wrap-table-cell (text width)
+  "Wrap cell TEXT into a list of lines at most WIDTH columns wide.
+Lines break between words, keeping inline code spans together;
+words wider than WIDTH are split."
+  (let ((lines nil)
+        (line "")
+        (words nil)
+        (pos 0))
+    (while (string-match "\\(?:`[^`\n]*`\\|[^ \t]\\)+" text pos)
+      (push (match-string 0 text) words)
+      (setq pos (match-end 0)))
+    (dolist (word (nreverse words))
+      (let ((candidate (if (string-empty-p line) word (concat line " " word))))
+        (if (<= (string-width candidate) width)
+            (setq line candidate)
+          (unless (string-empty-p line)
+            (push line lines))
+          (while (> (string-width word) width)
+            (let ((head (truncate-string-to-width word width)))
+              (when (string-empty-p head)
+                (setq head (substring word 0 1)))
+              (push head lines)
+              (setq word (substring word (length head)))))
+          (setq line word))))
+    (nreverse (cons line lines))))
+
+(defun opencode-session--fit-table-widths (widths max-width)
+  "Return column WIDTHS narrowed so the table is at most MAX-WIDTH wide.
+Columns that fit within an even share of the space keep their width;
+the rest split what remains.  Columns never shrink below 3."
+  (let* ((n (length widths))
+         (budget (- max-width (1+ (* 3 n)))))
+    (if (<= (apply #'+ widths) budget)
+        widths
+      (let ((open (number-sequence 0 (1- n)))
+            (result (copy-sequence widths))
+            settled)
+        (while (setq settled
+                     (cl-remove-if-not
+                      (lambda (i) (<= (nth i widths) (/ budget (length open))))
+                      open))
+          (dolist (i settled)
+            (cl-decf budget (nth i widths)))
+          (setq open (cl-set-difference open settled)))
+        (let ((share (/ budget (length open)))
+              (extra (% budget (length open))))
+          (cl-loop for i in (sort open #'<)
+                   for k from 0
+                   do (setf (nth i result)
+                            (max 3 (+ share (if (< k extra) 1 0))))))
+        result))))
+
+(defun opencode-session--table-max-width ()
+  "Return the width tables in the current buffer should fit, or nil.
+This is the width of the narrowest window showing the buffer."
+  (when-let* ((windows (get-buffer-window-list nil nil t)))
+    (apply #'min (mapcar #'window-max-chars-per-line windows))))
+
+(defvar-local opencode-session--table-width nil
+  "Width that tables in this buffer were last fitted to.
+Nil when a table was rendered while no window showed the buffer.")
+
+(defvar-local opencode-session--table-refit-timer nil
+  "Idle timer for a pending table refit in this buffer.")
+
+(defun opencode-session--message-has-table-p (message)
+  "Return non-nil when a text part of MESSAGE contains a table row."
+  (cl-some (lambda (entry)
+             (let ((part (cdr entry)))
+               (and (equal (opencode-message-part-type part) "text")
+                    (stringp (opencode-message-part-text part))
+                    (opencode-session--table-line-p (opencode-message-part-text part)))))
+           (opencode-message-parts message)))
+
+(defun opencode-session--refit-tables (buffer)
+  "Re-render tables in BUFFER when the width they should fit has changed."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (let ((width (opencode-session--table-max-width)))
+        (when (and width (not (eql width opencode-session--table-width)))
+          (setq opencode-session--table-width width)
+          (dolist (message opencode-session--messages)
+            (when (and (opencode-message-start-marker message)
+                       (opencode-session--message-has-table-p message))
+              (opencode-session--render-message message))))))))
+
+(defun opencode-session--schedule-table-refit (window)
+  "Refit tables in WINDOW's buffer once resizing pauses."
+  (with-current-buffer (window-buffer window)
+    (when (timerp opencode-session--table-refit-timer)
+      (cancel-timer opencode-session--table-refit-timer))
+    (setq opencode-session--table-refit-timer
+          (run-with-idle-timer 0.2 nil #'opencode-session--refit-tables
+                               (current-buffer)))))
+
+(defun opencode-session--align-markdown-tables (text &optional max-width)
   "Rewrite markdown tables in TEXT so columns are evenly padded.
 Consecutive lines that look like table rows are grouped, column
 widths are measured, and each cell is padded to the column maximum.
-Non-table text passes through unchanged."
+When MAX-WIDTH is non-nil, narrow columns so tables fit in that many
+columns, wrapping cell text onto extra lines and separating body rows
+with rules when any row wraps.  Non-table text passes through
+unchanged."
   (let ((lines (split-string text "\n"))
         (result nil)
         (table-lines nil))
@@ -278,35 +376,57 @@ Non-table text passes through unchanged."
         ((flush-table ()
            (when table-lines
              (setq table-lines (nreverse table-lines))
-             (let* ((rows (mapcar #'opencode-session--split-table-cells
+             (let* ((ncols (apply #'max (mapcar
+                                         (lambda (line)
+                                           (length (opencode-session--split-table-cells line)))
+                                         table-lines)))
+                    ;; nil marks a separator row.
+                    (rows (mapcar (lambda (line)
+                                    (unless (opencode-session--table-separator-p line)
+                                      (opencode-session--split-table-cells line)))
                                   table-lines))
-                    ;; Determine the number of columns from the widest row
-                    (ncols (apply #'max (mapcar #'length rows)))
-                    ;; Compute max width per column (minimum 3 for separator
-                    ;; dashes)
-                    (widths (cl-loop for col below ncols
-                                     collect
-                                     (max 3
-                                          (cl-loop
-                                           for row in rows
-                                           for cell = (or (nth col row) "")
-                                           unless
-                                           (opencode-session--table-separator-p
-                                            (nth (cl-position row rows) table-lines))
-                                           maximize (length cell))))))
-               (dolist (line table-lines)
-                 (if (opencode-session--table-separator-p line)
-                     (push (opencode-session--build-table-separator widths)
-                           result)
-                   (let ((cells (opencode-session--split-table-cells line)))
-                     (push (opencode-session--build-table-row cells widths)
-                           result)))))
+                    (natural (cl-loop for col below ncols
+                                      collect (apply #'max 3
+                                                     (cl-loop for row in rows
+                                                              when row
+                                                              collect (string-width
+                                                                       (or (nth col row) ""))))))
+                    (widths (if max-width
+                                (opencode-session--fit-table-widths natural max-width)
+                              natural))
+                    (wrapped (mapcar (lambda (row)
+                                       (when row
+                                         (cl-loop for col below ncols
+                                                  for width in widths
+                                                  collect (opencode-session--wrap-table-cell
+                                                           (or (nth col row) "") width))))
+                                     rows))
+                    (rule-between-rows (cl-some (lambda (row) (cl-some #'cdr row)) wrapped))
+                    (separator (opencode-session--build-table-separator widths))
+                    (header-done nil)
+                    (after-body-row nil))
+               (dolist (row wrapped)
+                 (if (null row)
+                     (progn
+                       (push separator result)
+                       (setq header-done t after-body-row nil))
+                   (when (and rule-between-rows header-done after-body-row)
+                     (push separator result))
+                   (dotimes (k (apply #'max (mapcar #'length row)))
+                     (push (opencode-session--build-table-row
+                            (mapcar (lambda (cell-lines) (or (nth k cell-lines) "")) row)
+                            widths)
+                           result))
+                   (setq after-body-row t))))
              (setq table-lines nil))))
-      (dolist (line lines)
-        (if (opencode-session--table-line-p line)
-            (push line table-lines)
-          (flush-table)
-          (push line result)))
+      (let ((in-code-block nil))
+        (dolist (line lines)
+          (if (and (not in-code-block) (opencode-session--table-line-p line))
+              (push line table-lines)
+            (flush-table)
+            (when (string-match-p "^[[:blank:]]*```" line)
+              (setq in-code-block (not in-code-block)))
+            (push line result))))
       (flush-table)
       (mapconcat #'identity (nreverse result) "\n"))))
 
@@ -654,11 +774,16 @@ Interruptions requested by the user are not errors and show nothing."
   (let ((part-type (opencode-message-part-type part)))
     (cond
      ((string= part-type "text")
-      (let ((text (opencode-session--align-markdown-tables
-                   (or (opencode-message-part-text part) "")))
-            (synthetic (opencode-message-part-synthetic part))
-            (ignored (opencode-message-part-ignored part))
-            (role (opencode-message-role message)))
+      (let* ((role (opencode-message-role message))
+             (max-width (when-let* ((width (opencode-session--table-max-width)))
+                          ;; Leave room for the user message line prefix.
+                          (if (string= role "user") (- width 2) width)))
+             (raw (or (opencode-message-part-text part) ""))
+             (text (opencode-session--align-markdown-tables raw max-width))
+             (synthetic (opencode-message-part-synthetic part))
+             (ignored (opencode-message-part-ignored part)))
+        (when (and (null max-width) (opencode-session--table-line-p raw))
+          (setq opencode-session--table-width nil))
         (unless (or synthetic ignored (string-empty-p (string-trim text)))
           (let ((ptype (if (string= role "user") "user-text" "assistant-text")))
             (propertize text 'opencode-part-type ptype)))))

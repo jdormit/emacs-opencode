@@ -798,7 +798,7 @@ and `opencode-markdown-code-block-face' to the content between them."
 (defun opencode-session--fontify-tables (limit)
   "Font-lock matcher for markdown tables up to LIMIT.
 Applies table faces to pipe delimiters, separator rows, and header
-cells (the row immediately before a separator row)."
+cells (the lines above the first separator row)."
   (let ((table-re opencode-session--regex-table-line)
         found)
     (while (and (not found)
@@ -812,11 +812,12 @@ cells (the row immediately before a separator row)."
                       (looking-at table-re)
                       (opencode-session--in-text-part-p (point)))
             (setq table-start (point)))
-          ;; Now find the end of the table (walk forward)
+          ;; Walk forward past LIMIT to the end of the table, so a
+          ;; partial refontify still finds the separator below the header.
           (goto-char table-start)
           (let ((table-end table-start)
                 (separator-line-start nil))
-            (while (and (< (point) limit)
+            (while (and (not (eobp))
                         (looking-at table-re)
                         (opencode-session--in-text-part-p (point)))
               (let ((line-beg (line-beginning-position))
@@ -825,7 +826,8 @@ cells (the row immediately before a separator row)."
                                 (line-beginning-position)
                                 (line-end-position))))
                 (when (opencode-session--table-separator-line-p line-text)
-                  (setq separator-line-start line-beg)
+                  (unless separator-line-start
+                    (setq separator-line-start line-beg))
                   (put-text-property line-beg line-fin
                                     'face
                                     'opencode-markdown-table-separator-face))
@@ -833,21 +835,16 @@ cells (the row immediately before a separator row)."
               (forward-line 1))
             ;; Fontify pipe delimiters and header cells
             (goto-char table-start)
-            (while (< (point) (min table-end limit))
+            (while (< (point) table-end)
               (let ((line-beg (line-beginning-position))
                     (line-fin (line-end-position))
                     (line-text (buffer-substring-no-properties
                                 (line-beginning-position)
                                 (line-end-position))))
                 (unless (opencode-session--table-separator-line-p line-text)
-                  (let ((is-header
-                         (and separator-line-start
-                              (save-excursion
-                                (forward-line 1)
-                                (= (line-beginning-position)
-                                   separator-line-start)))))
-                    (opencode-session--fontify-table-pipes
-                     line-beg (min line-fin limit))
+                  (let ((is-header (and separator-line-start
+                                        (< line-beg separator-line-start))))
+                    (opencode-session--fontify-table-pipes line-beg line-fin)
                     (when is-header
                       (opencode-session--fontify-table-header
                        line-beg line-fin)))))
