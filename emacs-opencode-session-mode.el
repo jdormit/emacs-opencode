@@ -537,18 +537,19 @@ whitespace or appear at the start of the string."
         (setq start (match-end 0))))
     (delete-dups (nreverse mentions))))
 
-(defun opencode-session--send-input (connection session input)
+(defun opencode-session--send-input (connection session input &optional notice)
   "Send INPUT to SESSION using CONNECTION.
 
 Mentioned @-agents are sent alongside the text so the server can delegate
-to them.  Restores INPUT when the request fails."
+to them.  Shows NOTICE instead of the usual status once the message is
+queued.  Restores INPUT when the request fails."
   (opencode-client-session-prompt
    connection
    (opencode-session-id session)
    input
    :agents (opencode-session--extract-agent-mentions input)
    :success (lambda (&rest _args)
-              (message "OpenCode: message queued"))
+              (message "%s" (or notice "OpenCode: message queued")))
    :error (lambda (&rest _args)
             (opencode-session--restore-input input)
             (message "OpenCode: failed to send message"))))
@@ -579,41 +580,69 @@ Restores the original input (with leading !) when the request fails."
               (opencode-session--restore-input (concat "!" command))
               (message "OpenCode: failed to send shell command")))))
 
+(defun opencode-session--command-known-p (connection command on-result on-error)
+  "Call ON-RESULT with non-nil when CONNECTION's server lists COMMAND.
+
+The command list can be incomplete while the server reloads a
+directory's plugins, so a miss is checked again after fetching models,
+which waits for plugins to load.  Calls ON-ERROR when a command list
+cannot be fetched."
+  (let ((listed-p
+         (lambda (args)
+           (and (member command (opencode-session--command-names
+                                 (opencode-session--command-items (plist-get args :data))))
+                t)))
+        (failed (lambda (&rest _args) (funcall on-error))))
+    (opencode-client-commands
+     connection
+     :success
+     (lambda (&rest args)
+       (if (or (null command) (funcall listed-p args))
+           (funcall on-result (and command t))
+         (let ((retry (lambda (&rest _args)
+                        (opencode-client-commands
+                         connection
+                         :success (lambda (&rest args)
+                                    (funcall on-result (funcall listed-p args)))
+                         :error failed))))
+           (opencode-client-models connection :success retry :error retry))))
+     :error failed)))
+
 (defun opencode-session--maybe-send-command (connection session input)
   "Send slash command INPUT to SESSION using CONNECTION when applicable.
 
 Falls back to a normal prompt when INPUT does not match an available command."
-  (let ((buffer (current-buffer)))
-    (opencode-client-commands
+  (let* ((buffer (current-buffer))
+         (command-info (opencode-session--parse-command-input input))
+         (command (car command-info))
+         (arguments (cadr command-info)))
+    (opencode-session--clear-input)
+    (opencode-session--command-known-p
      connection
-     :success (lambda (&rest args)
-                (when (buffer-live-p buffer)
-                  (with-current-buffer buffer
-                    (let* ((command-info (opencode-session--parse-command-input input))
-                           (command (car command-info))
-                           (arguments (cadr command-info))
-                           (data (plist-get args :data))
-                           (items (opencode-session--command-items data))
-                           (names (opencode-session--command-names items))
-                           (matched (and command (member command names))))
-                      (if matched
-                          (progn
-                            (opencode-client-session-command
-                             connection
-                             (opencode-session-id session)
-                             command
-                             arguments
-                             :success (lambda (&rest _args)
-                                        (message "OpenCode command queued"))
-                             :error (lambda (&rest _args)
-                                      (opencode-session--restore-input input)
-                                      (message "OpenCode: failed to send command")))
-                            (opencode-session--clear-input))
-                        (opencode-session--send-input connection session input)
-                        (opencode-session--clear-input)
-                        (message "OpenCode message submitted"))))))
-     :error (lambda (&rest _args)
-              (error "Failed to fetch OpenCode commands")))))
+     command
+     (lambda (known)
+       (when (buffer-live-p buffer)
+         (with-current-buffer buffer
+           (if known
+               (opencode-client-session-command
+                connection
+                (opencode-session-id session)
+                command
+                arguments
+                :success (lambda (&rest _args)
+                           (message "OpenCode command queued"))
+                :error (lambda (&rest _args)
+                         (opencode-session--restore-input input)
+                         (message "OpenCode: failed to send command")))
+             (opencode-session--send-input
+              connection session input
+              (and command
+                   (format "OpenCode: no /%s command, sent as a message" command)))))))
+     (lambda ()
+       (when (buffer-live-p buffer)
+         (with-current-buffer buffer
+           (opencode-session--restore-input input)
+           (message "OpenCode: failed to fetch commands")))))))
 
 ;;; Buffer naming and registration
 
@@ -1182,11 +1211,9 @@ preceded by whitespace or the start of the input region."
   "Return (COMMAND ARGUMENTS) parsed from INPUT.
 
 COMMAND is nil when INPUT is not a slash command."
-  (if (and (string-prefix-p "/" input)
-           (string-match "^/\\([^ ]+\\)\\(?: \\(.*\\)\\)?$" input))
-      (let ((command (match-string 1 input))
-            (arguments (or (match-string 2 input) "")))
-        (list command arguments))
+  (if (string-match "\\`/\\([^ \t\n]+\\)[ \t\n]*" input)
+      (list (match-string 1 input)
+            (string-trim-right (substring input (match-end 0))))
     (list nil "")))
 
 ;;; History loading

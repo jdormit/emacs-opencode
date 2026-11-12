@@ -33,6 +33,100 @@
   (let ((result (opencode-session--parse-command-input "/")))
     (should (null (car result)))))
 
+(ert-deftest test-opencode-session-mode/parse-command-arguments-on-next-line ()
+  "Arguments may start on the line after the command name."
+  (should (equal (opencode-session--parse-command-input "/review-pr\nhttps://x/1")
+                 '("review-pr" "https://x/1"))))
+
+(ert-deftest test-opencode-session-mode/parse-command-multiline-arguments ()
+  "Arguments keep their line breaks."
+  (should (equal (opencode-session--parse-command-input "/review-pr https://x/1\nfocus on auth\n")
+                 '("review-pr" "https://x/1\nfocus on auth"))))
+
+;;; maybe-send-command
+
+(defmacro opencode-session-mode-test--with-send-stubs (command-lists &rest body)
+  "Run BODY with send-path requests stubbed.
+Successive command list fetches return successive COMMAND-LISTS; an
+`:error' entry fails that fetch.  Binds `fetches', `waits',
+`models-fail', `commands-sent', `prompts-sent', and `restored' for BODY."
+  (declare (indent 1))
+  `(let ((lists ,command-lists) (fetches 0) (waits 0) models-fail
+         commands-sent prompts-sent restored)
+     (with-temp-buffer
+       (cl-letf (((symbol-function 'opencode-client-commands)
+                  (lambda (_conn &rest args)
+                    (cl-incf fetches)
+                    (let ((names (pop lists)))
+                      (if (eq names :error)
+                          (funcall (plist-get args :error))
+                        (funcall (plist-get args :success)
+                                 :data (mapcar (lambda (name) `((name . ,name))) names))))))
+                 ((symbol-function 'opencode-client-models)
+                  (lambda (_conn &rest args)
+                    (cl-incf waits)
+                    (funcall (plist-get args (if models-fail :error :success)) :data nil)))
+                 ((symbol-function 'opencode-session--restore-input)
+                  (lambda (input) (push input restored)))
+                 ((symbol-function 'opencode-client-session-command)
+                  (lambda (_conn _id command arguments &rest _)
+                    (push (list command arguments) commands-sent)))
+                 ((symbol-function 'opencode-client-session-prompt)
+                  (lambda (_conn _id text &rest args)
+                    (push text prompts-sent)
+                    (funcall (plist-get args :success))))
+                 ((symbol-function 'opencode-session--clear-input) #'ignore))
+         ,@body))))
+
+(defun opencode-session-mode-test--send (input)
+  "Send INPUT through the slash command path."
+  (opencode-session--maybe-send-command (opencode-connection-create)
+                                        (opencode-session-create :id "s1")
+                                        input))
+
+(ert-deftest test-opencode-session-mode/send-command-known ()
+  "A listed command runs without waiting for plugins."
+  (opencode-session-mode-test--with-send-stubs '(("review-pr"))
+    (opencode-session-mode-test--send "/review-pr https://x/1")
+    (should (equal commands-sent '(("review-pr" "https://x/1"))))
+    (should (= waits 0))
+    (should-not prompts-sent)))
+
+(ert-deftest test-opencode-session-mode/send-command-waits-for-plugins-on-miss ()
+  "A missing command is looked up again once plugins have loaded."
+  (opencode-session-mode-test--with-send-stubs '(("init") ("init" "review-pr"))
+    (opencode-session-mode-test--send "/review-pr https://x/1")
+    (should (= waits 1))
+    (should (= fetches 2))
+    (should (equal commands-sent '(("review-pr" "https://x/1"))))
+    (should-not prompts-sent)))
+
+(ert-deftest test-opencode-session-mode/send-command-retries-when-plugin-wait-fails ()
+  "The command list is checked again even when waiting for plugins times out."
+  (opencode-session-mode-test--with-send-stubs '(("init") ("init" "review-pr"))
+    (setq models-fail t)
+    (opencode-session-mode-test--send "/review-pr https://x/1")
+    (should (equal commands-sent '(("review-pr" "https://x/1"))))))
+
+(ert-deftest test-opencode-session-mode/send-command-fetch-failure-restores-input ()
+  "Input is restored, not sent, when the command list cannot be fetched."
+  (opencode-session-mode-test--with-send-stubs '(("init") :error)
+    (opencode-session-mode-test--send "/review-pr https://x/1")
+    (should (equal restored '("/review-pr https://x/1")))
+    (should-not prompts-sent)
+    (should-not commands-sent)))
+
+(ert-deftest test-opencode-session-mode/send-command-unknown-falls-back ()
+  "An unknown command is sent as a message with a notice."
+  (opencode-session-mode-test--with-send-stubs '(("init") ("init"))
+    (let (notices)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format &rest args) (push (apply #'format format args) notices))))
+        (opencode-session-mode-test--send "/nope hi"))
+      (should (equal prompts-sent '("/nope hi")))
+      (should-not commands-sent)
+      (should (seq-some (lambda (notice) (string-match-p "/nope" notice)) notices)))))
+
 ;;; buffer-name
 
 (ert-deftest test-opencode-session-mode/buffer-name-with-title ()
