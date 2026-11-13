@@ -1059,8 +1059,26 @@ A mode line list starting with a symbol is a conditional, so an empty
             (opencode-sessions--update "s05" 'title "Renamed")
             (opencode-sessions--render)
             (should (equal (tabulated-list-get-id (window-point window)) "s20"))
+            (should (equal (tabulated-list-get-id
+                            (save-excursion (goto-char (window-point window)) (pos-bol 0)))
+                           "s20"))
             (should (equal (tabulated-list-get-id (window-start window)) "s10")))
         (delete-window window)))))
+
+(ert-deftest test-opencode-sessions/redraw-keeps-point-within-row ()
+  "Redrawing keeps point on the same line and column of its session's row."
+  (opencode-sessions-test--in-sidebar
+      (list (opencode-sessions-test--info "s1" :updated 300)
+            (opencode-sessions-test--info "s2" :updated 200))
+    (opencode-sessions-test--goto "s2")
+    (forward-line 2)
+    (move-to-column 6)
+    (opencode-sessions--update "s1" 'time '((updated . 100)))
+    (opencode-sessions--render)
+    (should (equal (tabulated-list-get-id) "s2"))
+    (should (equal (tabulated-list-get-id (pos-bol 0)) "s2"))
+    (should (equal (tabulated-list-get-id (pos-bol -1)) "s2"))
+    (should (= (current-column) 6))))
 
 (ert-deftest test-opencode-sessions/render-updates-every-overview ()
   "Both the overview buffer and the sidebar are redrawn."

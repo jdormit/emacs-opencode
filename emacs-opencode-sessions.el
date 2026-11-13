@@ -812,23 +812,47 @@ CLOSING-BUFFER is an overview buffer being killed."
       (forward-line))
     (unless (eobp) (point))))
 
+(defun opencode-sessions--place (pos)
+  "Return where POS is, as (ID OFFSET COLUMN LINE).
+ID is the session on POS's line, OFFSET how many lines into its row the
+line is, and LINE the line number, for lines without a session."
+  (save-excursion
+    (goto-char pos)
+    (let ((line (line-number-at-pos))
+          (column (current-column))
+          (id (tabulated-list-get-id)))
+      (opencode-sessions--row-start)
+      (list id (- line (line-number-at-pos)) column line))))
+
+(defun opencode-sessions--place-position (place)
+  "Return the position of PLACE, from `opencode-sessions--place'."
+  (pcase-let ((`(,id ,offset ,column ,line) place))
+    (save-excursion
+      (if-let* ((start (and id (opencode-sessions--row-position id))))
+          (progn
+            (goto-char start)
+            (forward-line offset)
+            (while (and (> (point) start) (not (equal (tabulated-list-get-id) id)))
+              (forward-line -1)))
+        (goto-char (opencode-sessions--line-position line)))
+      (move-to-column column)
+      (point))))
+
 (defun opencode-sessions--print ()
-  "Reprint the current overview buffer, keeping each window in place.
-Reprinting erases the buffer, which would otherwise send unselected
-windows, such as the sidebar while you work elsewhere, back to the top."
-  (let ((places (mapcar (lambda (window)
-                          (let ((point (window-point window)))
-                            (list window
-                                  (line-number-at-pos (window-start window))
-                                  (tabulated-list-get-id point)
-                                  (line-number-at-pos point))))
-                        (get-buffer-window-list nil nil t))))
-    (tabulated-list-print t)
-    (pcase-dolist (`(,window ,start ,id ,line) places)
+  "Reprint the current overview buffer, keeping point and each window in place.
+Reprinting erases the buffer, which would otherwise send point to the
+top, and with it every window showing the buffer."
+  (let ((point (opencode-sessions--place (point)))
+        (windows (mapcar (lambda (window)
+                           (list window
+                                 (line-number-at-pos (window-start window))
+                                 (opencode-sessions--place (window-point window))))
+                         (get-buffer-window-list nil nil t))))
+    (tabulated-list-print)
+    (goto-char (opencode-sessions--place-position point))
+    (pcase-dolist (`(,window ,start ,place) windows)
       (set-window-start window (opencode-sessions--line-position start) t)
-      (unless (eq window (selected-window))
-        (set-window-point window (or (and id (opencode-sessions--row-position id))
-                                     (opencode-sessions--line-position line)))))))
+      (set-window-point window (opencode-sessions--place-position place)))))
 
 (defun opencode-sessions--changed ()
   "Redraw the overview and the indicator soon, coalescing bursts of changes."
