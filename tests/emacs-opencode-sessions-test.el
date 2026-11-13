@@ -753,19 +753,31 @@ A mode line list starting with a symbol is a conditional, so an empty
             (should (equal (tabulated-list-get-id) "s1")))
         (kill-buffer)))))
 
-(defmacro opencode-sessions-test--in-overview (infos &rest body)
-  "Run BODY in a rendered overview buffer listing session INFOS."
-  (declare (indent 1))
+(defmacro opencode-sessions-test--in-mode (name mode infos &rest body)
+  "Run BODY in a rendered overview buffer NAME in MODE listing session INFOS."
+  (declare (indent 3))
   `(opencode-sessions-test--with-tracker ,infos
-     (with-current-buffer (get-buffer-create opencode-sessions--buffer-name)
+     (with-current-buffer (get-buffer-create ,name)
        (unwind-protect
            (progn
-             (opencode-sessions-mode)
+             (funcall ,mode)
              (opencode-sessions--render)
              (goto-char (point-min))
              ,@body)
          (let ((kill-buffer-hook nil))
            (kill-buffer))))))
+
+(defmacro opencode-sessions-test--in-overview (infos &rest body)
+  "Run BODY in a rendered overview buffer listing session INFOS."
+  (declare (indent 1))
+  `(opencode-sessions-test--in-mode opencode-sessions--buffer-name #'opencode-sessions-mode
+       ,infos ,@body))
+
+(defmacro opencode-sessions-test--in-sidebar (infos &rest body)
+  "Run BODY in a rendered sidebar buffer listing session INFOS."
+  (declare (indent 1))
+  `(opencode-sessions-test--in-mode opencode-sessions--sidebar-buffer-name
+       #'opencode-sessions-sidebar-mode ,infos ,@body))
 
 (defun opencode-sessions-test--goto (id)
   "Move point to the row of session ID."
@@ -969,6 +981,148 @@ A mode line list starting with a symbol is a conditional, so an empty
         (opencode-sessions-new))
       (should (equal directory "/tmp/p1/")))))
 
+;;; Sidebar
+
+(defun opencode-sessions-test--row-lines (id)
+  "Return the text of the lines in the row of session ID."
+  (opencode-sessions-test--goto id)
+  (let (lines)
+    (while (equal (tabulated-list-get-id) id)
+      (push (buffer-substring-no-properties (line-beginning-position) (line-end-position))
+            lines)
+      (forward-line))
+    (nreverse lines)))
+
+(ert-deftest test-opencode-sessions/sidebar-rows-span-lines ()
+  "A sidebar row shows the title, then the details, then the directory."
+  (opencode-sessions-test--in-sidebar
+      (list (opencode-sessions-test--info "s1" :title "Fix bug" :directory "/tmp/p1"
+                                          :cost 1.234 :updated 1000 :idle 900)
+            (opencode-sessions-test--info "s2" :title "Quiet" :directory "/tmp/p2"
+                                          :updated 1000 :idle 5 :viewed 5))
+    (opencode-sessions-test--set-changes "s1" '("/tmp/p1/" ("a.el") (12 . 3)))
+    (cl-letf (((symbol-function 'float-time) (lambda (&rest _) 3601.0)))
+      (opencode-sessions--render))
+    (should-not header-line-format)
+    (should (equal (opencode-sessions-test--row-lines "s1")
+                   '("  Fix bug" "    done  +12 -3  $1.23  1h" "    /tmp/p1")))
+    (should (equal (opencode-sessions-test--row-lines "s2")
+                   '("  Quiet" "    1h" "    /tmp/p2")))))
+
+(ert-deftest test-opencode-sessions/sidebar-flags-and-moves-by-row ()
+  "Flagging from any line of a sidebar row tags its first line and moves to the next row."
+  (opencode-sessions-test--in-sidebar
+      (list (opencode-sessions-test--info "s1" :updated 300)
+            (opencode-sessions-test--info "s2" :updated 200)
+            (opencode-sessions-test--info "s3" :updated 100))
+    (opencode-sessions-test--goto "s1")
+    (forward-line 2)
+    (opencode-sessions-flag-delete)
+    (should (equal (tabulated-list-get-id) "s2"))
+    (should (equal (opencode-sessions-test--tag) " "))
+    (opencode-sessions-test--goto "s1")
+    (should (equal (opencode-sessions-test--tag) "D"))
+    (opencode-sessions--render)
+    (opencode-sessions-test--goto "s1")
+    (should (equal (opencode-sessions-test--tag) "D"))
+    (opencode-sessions-test--goto "s3")
+    (forward-line 1)
+    (opencode-sessions-unmark-backward)
+    (should (equal (tabulated-list-get-id) "s2"))
+    (should (equal (opencode-sessions-test--tag) " "))
+    (opencode-sessions-test--goto "s1")
+    (forward-line 1)
+    (opencode-sessions-next)
+    (should (equal (tabulated-list-get-id) "s2"))
+    (should (bolp))
+    (should-not (equal (tabulated-list-get-id (pos-bol 0)) "s2"))
+    (opencode-sessions-previous)
+    (should (equal (tabulated-list-get-id) "s1"))
+    (opencode-sessions-previous)
+    (should (equal (tabulated-list-get-id) "s1"))))
+
+(ert-deftest test-opencode-sessions/redraw-keeps-other-windows-in-place ()
+  "Redrawing keeps an unselected window on its session and scroll position."
+  (opencode-sessions-test--in-sidebar
+      (cl-loop for i from 1 to 30
+               collect (opencode-sessions-test--info (format "s%02d" i) :updated (- 1000 i)))
+    (let ((window (split-window)))
+      (unwind-protect
+          (progn
+            (set-window-buffer window (current-buffer))
+            (opencode-sessions-test--goto "s20")
+            (forward-line 1)
+            (set-window-point window (point))
+            (opencode-sessions-test--goto "s10")
+            (set-window-start window (point))
+            (goto-char (point-min))
+            (opencode-sessions--update "s05" 'title "Renamed")
+            (opencode-sessions--render)
+            (should (equal (tabulated-list-get-id (window-point window)) "s20"))
+            (should (equal (tabulated-list-get-id (window-start window)) "s10")))
+        (delete-window window)))))
+
+(ert-deftest test-opencode-sessions/render-updates-every-overview ()
+  "Both the overview buffer and the sidebar are redrawn."
+  (opencode-sessions-test--in-sidebar
+      (list (opencode-sessions-test--info "s1" :title "First"))
+    (with-current-buffer (get-buffer-create opencode-sessions--buffer-name)
+      (unwind-protect
+          (progn
+            (opencode-sessions-mode)
+            (opencode-sessions--update "s1" 'title "Renamed")
+            (opencode-sessions--render)
+            (goto-char (point-min))
+            (should (search-forward "Renamed" nil t)))
+        (let ((kill-buffer-hook nil))
+          (kill-buffer))))
+    (goto-char (point-min))
+    (should (search-forward "Renamed" nil t))))
+
+(ert-deftest test-opencode-sessions/sidebar-alone-keeps-tracking ()
+  "Changes are looked up and tracking continues while only the sidebar is open."
+  (opencode-sessions-test--in-sidebar
+      (list (opencode-sessions-test--info "s1"))
+    (let (fetched)
+      (cl-letf (((symbol-function 'opencode-changes-fetch-tree)
+                 (lambda (_conn id &rest _) (push id fetched))))
+        (opencode-sessions--fetch-changes "s1"))
+      (should (equal fetched '("s1"))))
+    (opencode-sessions--stop-unless-needed)
+    (should opencode-sessions--tracker)
+    (opencode-sessions--stop-unless-needed (current-buffer))
+    (should-not opencode-sessions--tracker)))
+
+(ert-deftest test-opencode-sessions/sidebar-toggles-and-opens-in-main-window ()
+  "The sidebar shows in a side window, opens sessions elsewhere, and toggles off."
+  (opencode-sessions-test--with-tracker
+      (list (opencode-sessions-test--info "s1"))
+    (let ((main (selected-window))
+          opened-in)
+      (delete-other-windows)
+      (unwind-protect
+          (cl-letf (((symbol-function 'opencode-sessions--ensure-tracking) #'ignore)
+                    ((symbol-function 'opencode--ensure-session-buffer)
+                     (lambda (&rest _) (setq opened-in (selected-window)))))
+            (opencode-sessions-sidebar)
+            (let ((sidebar (selected-window)))
+              (should (eq (window-parameter sidebar 'window-side)
+                          opencode-sessions-sidebar-side))
+              (should (eq major-mode 'opencode-sessions-sidebar-mode))
+              (opencode-sessions--render)
+              (opencode-sessions-test--goto "s1")
+              (opencode-sessions-open)
+              (should (eq opened-in main))
+              (should (eq (selected-window) main))
+              (with-current-buffer opencode-sessions--sidebar-buffer-name
+                (should (eq (key-binding "S") #'undefined)))
+              (opencode-sessions-sidebar)
+              (should-not (window-live-p sidebar))
+              (should-not (get-buffer opencode-sessions--sidebar-buffer-name))))
+        (when-let* ((buffer (get-buffer opencode-sessions--sidebar-buffer-name)))
+          (let ((kill-buffer-hook nil))
+            (kill-buffer buffer)))))))
+
 (ert-deftest test-opencode-sessions/evil-normal-state-bindings ()
   "Under Evil, the overview's commands are reachable from normal state."
   (skip-unless (require 'evil nil t))
@@ -983,7 +1137,10 @@ A mode line list starting with a symbol is a conditional, so an empty
       (should (eq (key-binding "u") #'opencode-sessions-unmark))
       (should (eq (key-binding "go") #'opencode-sessions-open-other-window))
       (should (eq (key-binding (kbd "RET")) #'opencode-sessions-open))
-      (should (string-prefix-p "evil-" (symbol-name (key-binding "k")))))))
+      (should (string-prefix-p "evil-" (symbol-name (key-binding "k"))))
+      (opencode-sessions-sidebar-mode)
+      (evil-normal-state)
+      (should (eq (key-binding "x") #'opencode-sessions-execute)))))
 
 (provide 'emacs-opencode-sessions-test)
 

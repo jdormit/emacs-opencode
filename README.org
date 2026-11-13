@@ -137,6 +137,7 @@ include the 10 lines around point plus file and line metadata when available.
 | =opencode-ask-contextual=          | New session with prompt + buffer context    |
 | =opencode-open-session=            | Open an existing session                    |
 | =opencode-sessions=                | List sessions across all projects           |
+| =opencode-sessions-sidebar=        | Show or hide the session list in a sidebar  |
 | =opencode-send-to-session=         | Send a prompt to an existing session        |
 | =opencode-send-context-to-session= | Send prompt + context to an existing session |
 | =opencode-mcp-status=              | Show current OpenCode MCP server status     |
@@ -201,6 +202,7 @@ client.
 | Key   | Action                                                     |
 |-------+------------------------------------------------------------|
 | =RET= | Open the session                                           |
+| =n=   | Move to the next session (=p=: the previous one)           |
 | =o=   | Open the session in another window                         |
 | =C-o= | Show the session in another window without selecting it    |
 | =R=   | Rename the session                                         |
@@ -225,6 +227,12 @@ selecting it, and =gr= reloads.
 The overview lists sessions updated in the last =opencode-sessions-days= days
 (default 7), up to =opencode-sessions-max= sessions (default 1000). Running
 sessions are always listed. After =x= deletes sessions, the list reloads.
+
+=M-x opencode-sessions-sidebar= shows the same list in a side window, like
+=dired-sidebar=. Each session takes three lines there: its title, then its
+status, changes, cost and age, then the worktree it changed. The keys are the
+same, and =RET= opens a session in the most recently used other window. Run the
+command again to hide the sidebar.
 
 To see in the mode line how many sessions are waiting on you, running, or
 finished but unseen, turn on =opencode-sessions-indicator-mode=. Clicking the
@@ -318,6 +326,8 @@ Options and faces are in the =emacs-opencode= customize group. Common options:
 | =opencode-session-list-limit=            | =1000=            | Max sessions requested for completion    |
 | =opencode-sessions-days=                 | =7=               | Days of sessions listed in the overview  |
 | =opencode-sessions-max=                  | =1000=            | Max sessions listed in the overview      |
+| =opencode-sessions-sidebar-width=        | =40=              | Width of the session sidebar             |
+| =opencode-sessions-sidebar-side=         | =left=            | Side of the frame the sidebar shows on   |
 | =opencode-session-default-agent=         | ="plan"=          | Default agent for new sessions           |
 | =opencode-session-default-variant=       | =nil=             | Default model variant                    |
 | =opencode-session-oauth-poll-interval=   | =2=               | Seconds between browser sign-in checks   |

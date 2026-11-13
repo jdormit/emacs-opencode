@@ -30,11 +30,24 @@ within `opencode-sessions-days'."
   :type 'natnum
   :group 'emacs-opencode)
 
+(defcustom opencode-sessions-sidebar-width 40
+  "Width of the session sidebar, in columns."
+  :type 'natnum
+  :group 'emacs-opencode)
+
+(defcustom opencode-sessions-sidebar-side 'left
+  "Side of the frame the session sidebar shows on."
+  :type '(choice (const left) (const right))
+  :group 'emacs-opencode)
+
 (defconst opencode-sessions--page-size 200
   "Number of sessions requested per page while loading the overview.")
 
 (defconst opencode-sessions--buffer-name "*OpenCode: Sessions*"
   "Name of the session overview buffer.")
+
+(defconst opencode-sessions--sidebar-buffer-name "*OpenCode: Sessions Sidebar*"
+  "Name of the session sidebar buffer.")
 
 (defconst opencode-sessions--max-fetches 4
   "Maximum number of sessions whose changes are looked up at once.")
@@ -473,8 +486,8 @@ recorded none.  The count is dropped when a newer one has started."
 The worktrees are looked up from the session's messages when it was
 updated since they were last found, or when FORCE is non-nil.
 Otherwise only their changes are counted again.  Nothing is looked up
-while the overview buffer is closed, since only it shows changes."
-  (when-let* (((get-buffer opencode-sessions--buffer-name))
+while no overview buffer is open, since only they show changes."
+  (when-let* (((opencode-sessions--buffers))
               (info (gethash session-id (opencode-sessions--table 'sessions))))
     (let ((work (with-memoization (gethash session-id (opencode-sessions--table 'changes))
                   (opencode-sessions--work-create)))
@@ -734,13 +747,12 @@ When already tracking and RELOAD is non-nil, load the sessions again."
 (defun opencode-sessions--stop-unless-needed (&optional closing-buffer)
   "Stop tracking sessions when neither the overview nor the indicator needs it.
 CLOSING-BUFFER is an overview buffer being killed."
-  (let ((buffer (get-buffer opencode-sessions--buffer-name)))
-    (unless (or opencode-sessions-indicator-mode
-                (and buffer (not (eq buffer closing-buffer))))
-      (setq opencode-sessions--tracker nil)
-      (setq opencode-sessions--indicator "")
-      (remove-hook 'window-selection-change-functions #'opencode-sessions--view-selected)
-      (remove-hook 'window-buffer-change-functions #'opencode-sessions--view-selected))))
+  (unless (or opencode-sessions-indicator-mode
+              (remq closing-buffer (opencode-sessions--buffers)))
+    (setq opencode-sessions--tracker nil)
+    (setq opencode-sessions--indicator "")
+    (remove-hook 'window-selection-change-functions #'opencode-sessions--view-selected)
+    (remove-hook 'window-buffer-change-functions #'opencode-sessions--view-selected)))
 
 ;;; Rendering
 
@@ -764,20 +776,59 @@ CLOSING-BUFFER is an overview buffer being killed."
                     'mouse-face 'mode-line-highlight
                     'local-map (make-mode-line-mouse-map 'mouse-1 #'opencode-sessions))))))
 
+(defun opencode-sessions--buffers ()
+  "Return the open overview buffers: the full overview and the sidebar."
+  (delq nil (mapcar #'get-buffer (list opencode-sessions--buffer-name
+                                       opencode-sessions--sidebar-buffer-name))))
+
 (defun opencode-sessions--render ()
-  "Redraw the overview buffer and the mode line indicator."
+  "Redraw the overview buffers and the mode line indicator."
   (when opencode-sessions--tracker
     (when opencode-sessions-indicator-mode
       (setq opencode-sessions--indicator (opencode-sessions--indicator-text))
       (force-mode-line-update t))
-    (when-let* ((buffer (get-buffer opencode-sessions--buffer-name)))
+    (dolist (buffer (opencode-sessions--buffers))
       (with-current-buffer buffer
+        ;; Each buffer gets its own lists, since sorting reorders them in place.
         (let ((groups (opencode-sessions--groups)))
           (when (boundp 'tabulated-list-groups)
             (setq tabulated-list-groups groups))
           (setq tabulated-list-entries (apply #'append (mapcar #'cdr groups)))
           (opencode-sessions--forget-unlisted-flags)
-          (tabulated-list-print t))))))
+          (opencode-sessions--print))))))
+
+(defun opencode-sessions--line-position (line)
+  "Return the position of the start of LINE in the current buffer."
+  (save-excursion
+    (goto-char (point-min))
+    (forward-line (1- line))
+    (point)))
+
+(defun opencode-sessions--row-position (id)
+  "Return the position of the row of session ID, or nil."
+  (save-excursion
+    (goto-char (point-min))
+    (while (and (not (eobp)) (not (equal (tabulated-list-get-id) id)))
+      (forward-line))
+    (unless (eobp) (point))))
+
+(defun opencode-sessions--print ()
+  "Reprint the current overview buffer, keeping each window in place.
+Reprinting erases the buffer, which would otherwise send unselected
+windows, such as the sidebar while you work elsewhere, back to the top."
+  (let ((places (mapcar (lambda (window)
+                          (let ((point (window-point window)))
+                            (list window
+                                  (line-number-at-pos (window-start window))
+                                  (tabulated-list-get-id point)
+                                  (line-number-at-pos point))))
+                        (get-buffer-window-list nil nil t))))
+    (tabulated-list-print t)
+    (pcase-dolist (`(,window ,start ,id ,line) places)
+      (set-window-start window (opencode-sessions--line-position start) t)
+      (unless (eq window (selected-window))
+        (set-window-point window (or (and id (opencode-sessions--row-position id))
+                                     (opencode-sessions--line-position line)))))))
 
 (defun opencode-sessions--changed ()
   "Redraw the overview and the indicator soon, coalescing bursts of changes."
@@ -815,6 +866,8 @@ CLOSING-BUFFER is an overview buffer being killed."
   "RET" #'opencode-sessions-open
   "o" #'opencode-sessions-open-other-window
   "C-o" #'opencode-sessions-display
+  "n" #'opencode-sessions-next
+  "p" #'opencode-sessions-previous
   "R" #'opencode-sessions-rename
   "c" #'opencode-sessions-new
   "d" #'opencode-sessions-flag-delete
@@ -873,20 +926,69 @@ once.
             nil t)
   (tabulated-list-init-header))
 
+(defvar-keymap opencode-sessions-sidebar-mode-map
+  :doc "Keymap for `opencode-sessions-sidebar-mode'.
+Sidebar rows have no columns, so the column commands are unbound."
+  "S" #'undefined
+  "{" #'undefined
+  "}" #'undefined)
+
+(define-derived-mode opencode-sessions-sidebar-mode opencode-sessions-mode "OpenCode Sidebar"
+  "Mode listing OpenCode sessions in a narrow side window.
+It works like `opencode-sessions-mode', but each session takes three
+lines: its title, then its status, changes, cost and age, then where it
+worked.  Sessions open in the most recently used other window.
+
+\\{opencode-sessions-sidebar-mode-map}"
+  :group 'emacs-opencode
+  (setq tabulated-list-printer #'opencode-sessions--print-sidebar-entry)
+  (setq header-line-format nil))
+
 (defun opencode-sessions--reload ()
   "Reconnect to OpenCode if needed and load the sessions again."
   (opencode-sessions--ensure-tracking t))
+
+(defun opencode-sessions--buffer (name mode)
+  "Return the overview buffer called NAME, in MODE."
+  (let ((buffer (get-buffer-create name)))
+    (with-current-buffer buffer
+      (unless (eq major-mode mode)
+        (funcall mode)))
+    buffer))
 
 ;;;###autoload
 (defun opencode-sessions ()
   "List OpenCode sessions across all projects and what each needs from you."
   (interactive)
-  (let ((buffer (get-buffer-create opencode-sessions--buffer-name)))
-    (with-current-buffer buffer
-      (unless (derived-mode-p 'opencode-sessions-mode)
-        (opencode-sessions-mode)))
-    (pop-to-buffer-same-window buffer)
+  (pop-to-buffer-same-window
+   (opencode-sessions--buffer opencode-sessions--buffer-name #'opencode-sessions-mode))
+  (opencode-sessions--ensure-tracking))
+
+;;;###autoload
+(defun opencode-sessions-sidebar ()
+  "Show the OpenCode session list in a sidebar, or hide it."
+  (interactive)
+  (if-let* ((buffer (get-buffer opencode-sessions--sidebar-buffer-name))
+            ((get-buffer-window buffer)))
+      (kill-buffer buffer)
+    (select-window
+     (display-buffer-in-side-window
+      (opencode-sessions--buffer opencode-sessions--sidebar-buffer-name
+                                 #'opencode-sessions-sidebar-mode)
+      `((side . ,opencode-sessions-sidebar-side)
+        (slot . 0)
+        (window-width . ,opencode-sessions-sidebar-width)
+        (preserve-size . (t . nil))
+        (dedicated . t)
+        (window-parameters . ((no-delete-other-windows . t))))))
     (opencode-sessions--ensure-tracking)))
+
+(defun opencode-sessions--select-main-window ()
+  "Select the most recently used other window when in a side window.
+This way, sessions opened from the sidebar replace a regular window."
+  (when-let* (((window-parameter nil 'window-side))
+              (window (get-mru-window nil nil t)))
+    (select-window window)))
 
 (defun opencode-sessions--info-at-point ()
   "Return the info of the session on the current line."
@@ -900,17 +1002,21 @@ once.
            (opencode-sessions--tracker-connection opencode-sessions--tracker))
       (user-error "Not connected to OpenCode")))
 
-(defun opencode-sessions--open (action)
-  "Open the session at point, displaying its buffer with ACTION."
+(defun opencode-sessions--open (action &optional main-window)
+  "Open the session at point, displaying its buffer with ACTION.
+When MAIN-WINDOW is non-nil, leave a side window first."
   (let ((info (opencode-sessions--info-at-point))
         (display-buffer-overriding-action action))
+    (when main-window
+      (opencode-sessions--select-main-window))
     (opencode--ensure-session-buffer (opencode-session--session-from-info info)
                                      (opencode-sessions--connection))))
 
 (defun opencode-sessions-open ()
-  "Open the session at point in this window."
+  "Open the session at point in this window.
+From the sidebar, open it in the most recently used other window."
   (interactive)
-  (opencode-sessions--open '(display-buffer-same-window)))
+  (opencode-sessions--open '(display-buffer-same-window) t))
 
 (defun opencode-sessions-open-other-window ()
   "Open the session at point in another window."
@@ -936,11 +1042,42 @@ once.
    :success #'ignore
    :error (lambda (&rest _args) (message "OpenCode: failed to rename session"))))
 
+(defun opencode-sessions--row-start ()
+  "Move to the first line of the session row at point."
+  (forward-line 0)
+  (when-let* ((id (tabulated-list-get-id)))
+    (while (and (not (bobp)) (equal id (tabulated-list-get-id (pos-bol 0))))
+      (forward-line -1))))
+
 (defun opencode-sessions--next-session ()
-  "Move to the next line that shows a session."
-  (forward-line)
-  (while (and (not (eobp)) (not (tabulated-list-get-id)))
-    (forward-line)))
+  "Move to the first line of the next session row."
+  (let ((id (tabulated-list-get-id)))
+    (forward-line)
+    (while (and (not (eobp)) (member (tabulated-list-get-id) (list nil id)))
+      (forward-line))))
+
+(defun opencode-sessions--previous-session ()
+  "Move to the first line of the previous session row.
+Return nil and stay on the current row when there is none."
+  (opencode-sessions--row-start)
+  (let ((start (point)))
+    (forward-line -1)
+    (while (and (not (bobp)) (not (tabulated-list-get-id)))
+      (forward-line -1))
+    (if (tabulated-list-get-id)
+        (progn (opencode-sessions--row-start) t)
+      (goto-char start)
+      nil)))
+
+(defun opencode-sessions-next ()
+  "Move to the next session."
+  (interactive)
+  (opencode-sessions--next-session))
+
+(defun opencode-sessions-previous ()
+  "Move to the previous session."
+  (interactive)
+  (opencode-sessions--previous-session))
 
 (defconst opencode-sessions--flag-tags
   `((delete . ,(propertize "D" 'face 'error))
@@ -954,15 +1091,38 @@ When ACTION is nil, unflag it."
     (if action
         (puthash id action opencode-sessions--flagged)
       (remhash id opencode-sessions--flagged))
-    (tabulated-list-put-tag (alist-get action opencode-sessions--flag-tags " "))))
+    (save-excursion
+      (opencode-sessions--row-start)
+      (tabulated-list-put-tag (alist-get action opencode-sessions--flag-tags " ")))))
+
+(defun opencode-sessions--tag-if-flagged (id start)
+  "Tag the row of session ID, which starts at START, when it is flagged."
+  (when-let* ((action (gethash id opencode-sessions--flagged)))
+    (save-excursion
+      (goto-char start)
+      (tabulated-list-put-tag (alist-get action opencode-sessions--flag-tags)))))
 
 (defun opencode-sessions--print-entry (id columns)
   "Insert the row for session ID with COLUMNS, tagged when it is flagged."
-  (tabulated-list-print-entry id columns)
-  (when-let* ((action (gethash id opencode-sessions--flagged)))
-    (save-excursion
-      (forward-line -1)
-      (tabulated-list-put-tag (alist-get action opencode-sessions--flag-tags)))))
+  (let ((start (point)))
+    (tabulated-list-print-entry id columns)
+    (opencode-sessions--tag-if-flagged id start)))
+
+(defun opencode-sessions--print-sidebar-entry (id columns)
+  "Insert the sidebar row for session ID with COLUMNS, tagged when it is flagged.
+The title goes on the first line, then the status, changes, cost and age,
+then the directory."
+  (pcase-let ((`[,state ,title ,directory ,diff ,cost ,age] columns)
+              (start (point))
+              (indent (make-string (+ tabulated-list-padding 3) ?\s)))
+    (insert (make-string tabulated-list-padding ?\s) " " title "\n")
+    (dolist (line (list (string-join (seq-remove #'string-empty-p (list state diff cost age))
+                                     "  ")
+                        (propertize directory 'face 'shadow)))
+      (unless (string-empty-p line)
+        (insert indent line "\n")))
+    (add-text-properties start (point) `(tabulated-list-id ,id tabulated-list-entry ,columns))
+    (opencode-sessions--tag-if-flagged id start)))
 
 (defun opencode-sessions--forget-unlisted-flags ()
   "Unflag sessions that are no longer listed."
@@ -992,10 +1152,9 @@ When ACTION is nil, unflag it."
 (defun opencode-sessions-unmark-backward ()
   "Move to the previous session and remove its flag."
   (interactive)
-  (forward-line -1)
-  (while (and (not (bobp)) (not (tabulated-list-get-id)))
-    (forward-line -1))
-  (opencode-sessions--flag nil))
+  (if (opencode-sessions--previous-session)
+      (opencode-sessions--flag nil)
+    (user-error "No previous session")))
 
 (defun opencode-sessions-unmark-all ()
   "Remove every flag."
@@ -1009,6 +1168,7 @@ When ACTION is nil, unflag it."
   (let ((default-directory
          (file-name-as-directory
           (opencode-sessions--directory (opencode-sessions--info-at-point)))))
+    (opencode-sessions--select-main-window)
     (call-interactively #'opencode)))
 
 (defun opencode-sessions--title (id)
