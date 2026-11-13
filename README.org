@@ -202,6 +202,7 @@ client.
 | Key   | Action                                                     |
 |-------+------------------------------------------------------------|
 | =RET= | Open the session                                           |
+| =TAB= | Hide or show the sessions of the project at point          |
 | =n=   | Move to the next session (=p=: the previous one)           |
 | =o=   | Open the session in another window                         |
 | =C-o= | Show the session in another window without selecting it    |

@@ -99,6 +99,9 @@ that finishes."
 (defvar-local opencode-sessions--flagged nil
   "Hash table mapping flagged session IDs to `delete' or `archive'.")
 
+(defvar-local opencode-sessions--folded nil
+  "Hash table of the project IDs whose sessions are hidden.")
+
 ;;; Session data
 
 (defun opencode-sessions--table (slot)
@@ -348,9 +351,18 @@ When it changed several, the one with the most changed lines comes first."
    ((equal project-id "global") "Outside projects")
    (t (or project-id "Unknown project"))))
 
-(defun opencode-sessions--groups ()
+(defun opencode-sessions--heading (project-id infos folded)
+  "Return the heading of PROJECT-ID's group of sessions INFOS.
+When FOLDED is non-nil, it says how many sessions are hidden."
+  (propertize (concat (propertize (opencode-sessions--project-name project-id) 'face 'bold)
+                      (when folded
+                        (propertize (format " (%d hidden)" (length infos)) 'face 'shadow)))
+              'opencode-sessions-project project-id))
+
+(defun opencode-sessions--groups (&optional folded)
   "Return the listed sessions as tabulated list groups, one per project.
-Groups with more urgent sessions come first."
+Groups with more urgent sessions come first.  Projects in the hash table
+FOLDED show only their heading."
   (let ((by-project (make-hash-table :test 'equal))
         (groups nil))
     (maphash (lambda (_id info)
@@ -359,9 +371,10 @@ Groups with more urgent sessions come first."
     (maphash (lambda (project infos)
                (push (cons project (sort infos #'opencode-sessions--before-p)) groups))
              by-project)
-    (mapcar (lambda (group)
-              (cons (propertize (opencode-sessions--project-name (car group)) 'face 'bold)
-                    (mapcar #'opencode-sessions--entry (cdr group))))
+    (mapcar (pcase-lambda (`(,project . ,infos))
+              (let ((hidden (and folded (gethash project folded))))
+                (cons (opencode-sessions--heading project infos hidden)
+                      (unless hidden (mapcar #'opencode-sessions--entry infos)))))
             (sort groups (lambda (a b) (opencode-sessions--before-p (cadr a) (cadr b)))))))
 
 ;;; Changes
@@ -789,13 +802,17 @@ CLOSING-BUFFER is an overview buffer being killed."
       (force-mode-line-update t))
     (dolist (buffer (opencode-sessions--buffers))
       (with-current-buffer buffer
-        ;; Each buffer gets its own lists, since sorting reorders them in place.
-        (let ((groups (opencode-sessions--groups)))
-          (when (boundp 'tabulated-list-groups)
-            (setq tabulated-list-groups groups))
-          (setq tabulated-list-entries (apply #'append (mapcar #'cdr groups)))
-          (opencode-sessions--forget-unlisted-flags)
-          (opencode-sessions--print))))))
+        (opencode-sessions--render-buffer)))))
+
+(defun opencode-sessions--render-buffer ()
+  "Redraw the current overview buffer."
+  ;; Each buffer gets its own lists, since sorting reorders them in place.
+  (let ((groups (opencode-sessions--groups opencode-sessions--folded)))
+    (when (boundp 'tabulated-list-groups)
+      (setq tabulated-list-groups groups))
+    (setq tabulated-list-entries (apply #'append (mapcar #'cdr groups)))
+    (opencode-sessions--forget-unlisted-flags)
+    (opencode-sessions--print)))
 
 (defun opencode-sessions--line-position (line)
   "Return the position of the start of LINE in the current buffer."
@@ -888,6 +905,7 @@ top, and with it every window showing the buffer."
   :doc "Keymap for `opencode-sessions-mode'."
   :parent tabulated-list-mode-map
   "RET" #'opencode-sessions-open
+  "TAB" #'opencode-sessions-toggle-group
   "o" #'opencode-sessions-open-other-window
   "C-o" #'opencode-sessions-display
   "n" #'opencode-sessions-next
@@ -908,6 +926,7 @@ another window, `gO' shows without selecting, and `gr' reloads."
   (when (fboundp 'evil-define-key*)
     (evil-define-key* 'normal opencode-sessions-mode-map
       (kbd "RET") #'opencode-sessions-open
+      (kbd "TAB") #'opencode-sessions-toggle-group
       "go" #'opencode-sessions-open-other-window
       "gO" #'opencode-sessions-display
       "R" #'opencode-sessions-rename
@@ -925,7 +944,7 @@ another window, `gO' shows without selecting, and `gr' reloads."
   "Mode listing OpenCode sessions across all projects.
 Sessions are grouped by project.  Within each project, sessions waiting
 on you come first, then finished runs you have not looked at, then
-running sessions.
+running sessions.  Fold a project to hide its sessions.
 
 As in Dired, flag sessions to delete or archive, then act on them all at
 once.
@@ -941,6 +960,7 @@ once.
          ("Updated" 8 opencode-sessions--updated-less-p :right-align t)])
   (setq tabulated-list-padding 1)
   (setq opencode-sessions--flagged (make-hash-table :test 'equal))
+  (setq opencode-sessions--folded (make-hash-table :test 'equal))
   (setq tabulated-list-printer #'opencode-sessions--print-entry)
   (when (bound-and-true-p evil-mode)
     (opencode-sessions--setup-evil))
@@ -1092,6 +1112,28 @@ Return nil and stay on the current row when there is none."
         (progn (opencode-sessions--row-start) t)
       (goto-char start)
       nil)))
+
+(defun opencode-sessions--project-at-point ()
+  "Return the ID of the project whose heading or session is on this line."
+  (if-let* ((id (tabulated-list-get-id)))
+      (alist-get 'projectID (gethash id (opencode-sessions--table 'sessions)))
+    (get-text-property (pos-bol) 'opencode-sessions-project)))
+
+(defun opencode-sessions-toggle-group ()
+  "Hide or show the sessions of the project at point.
+Point moves to the project's heading."
+  (interactive)
+  (unless (boundp 'tabulated-list-groups)
+    (user-error "Folding projects needs Emacs 30 or later"))
+  (let ((project (or (opencode-sessions--project-at-point)
+                     (user-error "No project on this line"))))
+    (if (gethash project opencode-sessions--folded)
+        (remhash project opencode-sessions--folded)
+      (puthash project t opencode-sessions--folded))
+    (opencode-sessions--render-buffer)
+    (goto-char (point-min))
+    (when-let* ((match (text-property-search-forward 'opencode-sessions-project project t)))
+      (goto-char (prop-match-beginning match)))))
 
 (defun opencode-sessions-next ()
   "Move to the next session."

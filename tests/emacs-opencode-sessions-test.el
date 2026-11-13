@@ -970,6 +970,57 @@ A mode line list starting with a symbol is a conditional, so an empty
       (list (opencode-sessions-test--info "s1"))
     (should-error (opencode-sessions-execute) :type 'user-error)))
 
+(defun opencode-sessions-test--goto-heading (name)
+  "Move point to the project heading starting with NAME."
+  (goto-char (point-min))
+  (should (re-search-forward (concat "^" (regexp-quote name)) nil t))
+  (forward-line 0))
+
+(ert-deftest test-opencode-sessions/toggle-group-hides-and-shows-sessions ()
+  "TAB on a heading or a row folds its project, and TAB on the heading unfolds it."
+  (skip-unless (boundp 'tabulated-list-groups))
+  (pcase-dolist (`(,name ,mode)
+                 `((,opencode-sessions--buffer-name opencode-sessions-mode)
+                   (,opencode-sessions--sidebar-buffer-name opencode-sessions-sidebar-mode)))
+    (opencode-sessions-test--in-mode name mode
+        (list (opencode-sessions-test--info "a1" :project "pa" :updated 900)
+              (opencode-sessions-test--info "a2" :project "pa" :updated 800)
+              (opencode-sessions-test--info "b1" :project "pb" :updated 100))
+        (puthash "pa" "alpha" (opencode-sessions-test--table 'projects))
+        (puthash "pb" "beta" (opencode-sessions-test--table 'projects))
+        (opencode-sessions--render-buffer)
+        (should (eq (key-binding (kbd "TAB")) #'opencode-sessions-toggle-group))
+        (opencode-sessions-test--goto "a2")
+        (opencode-sessions-toggle-group)
+        (should (looking-at-p "alpha (2 hidden)$"))
+        (should-not (opencode-sessions--row-position "a1"))
+        (should (opencode-sessions--row-position "b1"))
+        (opencode-sessions--render-buffer)
+        (should-not (opencode-sessions--row-position "a1"))
+        (opencode-sessions-test--goto-heading "alpha")
+        (opencode-sessions-toggle-group)
+        (should (looking-at-p "alpha$"))
+        (should (opencode-sessions--row-position "a1"))
+        (should (opencode-sessions--row-position "a2")))))
+
+(ert-deftest test-opencode-sessions/folds-are-per-buffer ()
+  "Folding a project in the sidebar leaves it unfolded in the overview."
+  (skip-unless (boundp 'tabulated-list-groups))
+  (opencode-sessions-test--in-sidebar
+      (list (opencode-sessions-test--info "s1"))
+    (opencode-sessions-test--goto "s1")
+    (opencode-sessions-toggle-group)
+    (with-temp-buffer
+      (opencode-sessions-mode)
+      (opencode-sessions--render-buffer)
+      (should (opencode-sessions--row-position "s1")))))
+
+(ert-deftest test-opencode-sessions/toggle-group-outside-groups-errors ()
+  "TAB on a line with no project signals a user error."
+  (with-temp-buffer
+    (opencode-sessions-mode)
+    (should-error (opencode-sessions-toggle-group) :type 'user-error)))
+
 (ert-deftest test-opencode-sessions/new-session-in-same-project ()
   "A new session starts in the directory of the session at point."
   (opencode-sessions-test--in-overview
@@ -1154,6 +1205,7 @@ A mode line list starting with a symbol is a conditional, so an empty
       (should (eq (key-binding "a") #'opencode-sessions-flag-archive))
       (should (eq (key-binding "u") #'opencode-sessions-unmark))
       (should (eq (key-binding "go") #'opencode-sessions-open-other-window))
+      (should (eq (key-binding (kbd "TAB")) #'opencode-sessions-toggle-group))
       (should (eq (key-binding (kbd "RET")) #'opencode-sessions-open))
       (should (string-prefix-p "evil-" (symbol-name (key-binding "k"))))
       (opencode-sessions-sidebar-mode)
