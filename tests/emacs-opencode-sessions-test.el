@@ -568,6 +568,7 @@ roots are the directories in its session info's `roots'."
         (should (equal (sort (hash-table-keys sessions) #'string<) '("s1" "s2")))
         (should (equal (gethash "p1" projects) "/tmp/p1"))
         (should (equal (gethash "p2" projects) "Two"))
+        (should (equal (gethash "p2" (opencode-sessions-test--table 'directories)) "/tmp/p2"))
         (should (eq (opencode-sessions--state "s1") 'permission))
         (should (equal (sort diffed #'string<) '("s1" "s2")))))))
 
@@ -1056,16 +1057,56 @@ Return the name of the buffer shown in the window that showed s1's buffer."
     (opencode-sessions-mode)
     (should-error (opencode-sessions-toggle-group) :type 'user-error)))
 
+(defun opencode-sessions-test--new-session-directory (&optional prefix)
+  "Run `opencode-sessions-new' with PREFIX and return where the session starts.
+Prompting for a project answers \"/tmp/chosen/\"."
+  (let (directory)
+    (cl-letf (((symbol-function 'opencode)
+               (lambda (dir)
+                 (interactive (progn (should-not current-prefix-arg)
+                                     (list default-directory)))
+                 (setq directory dir)))
+              ((symbol-function 'project-prompt-project-dir) (lambda () "/tmp/chosen/")))
+      (let ((current-prefix-arg prefix))
+        (call-interactively #'opencode-sessions-new)))
+    directory))
+
 (ert-deftest test-opencode-sessions/new-session-in-same-project ()
-  "A new session starts in the directory of the session at point."
+  "A new session starts in the root of the project of the session at point.
+Until the root is known, it starts in the session's directory."
   (opencode-sessions-test--in-overview
-      (list (opencode-sessions-test--info "s1" :directory "/tmp/p1"))
+      (list (opencode-sessions-test--info "s1" :directory "/tmp/p1/worktree"))
     (opencode-sessions-test--goto "s1")
-    (let (directory)
-      (cl-letf (((symbol-function 'opencode)
-                 (lambda (dir) (interactive (list default-directory)) (setq directory dir))))
-        (opencode-sessions-new))
-      (should (equal directory "/tmp/p1/")))))
+    (should (equal (opencode-sessions-test--new-session-directory) "/tmp/p1/worktree/"))
+    (puthash "p1" "/tmp/p1" (opencode-sessions-test--table 'directories))
+    (should (equal (opencode-sessions-test--new-session-directory) "/tmp/p1/"))))
+
+(ert-deftest test-opencode-sessions/new-session-from-project-heading ()
+  "On a project heading, a new session starts in the project's directory."
+  (skip-unless (boundp 'tabulated-list-groups))
+  (opencode-sessions-test--in-sidebar
+      (list (opencode-sessions-test--info "s1" :directory "/tmp/p1/worktree"))
+    (puthash "p1" "alpha" (opencode-sessions-test--table 'projects))
+    (puthash "p1" "/tmp/p1" (opencode-sessions-test--table 'directories))
+    (opencode-sessions--render-buffer)
+    (opencode-sessions-test--goto-heading "alpha")
+    (should (equal (opencode-sessions-test--new-session-directory) "/tmp/p1/"))
+    (remhash "p1" (opencode-sessions-test--table 'directories))
+    (should (equal (opencode-sessions-test--new-session-directory) "/tmp/p1/worktree/"))))
+
+(ert-deftest test-opencode-sessions/new-session-prompts-for-project ()
+  "A prefix argument, or no project at point, prompts for the project."
+  (opencode-sessions-test--in-overview
+      (list (opencode-sessions-test--info "s1" :directory "/tmp/p1")
+            (opencode-sessions-test--info "g1" :project "global" :directory "/tmp/loose"))
+    (opencode-sessions-test--goto "s1")
+    (should (equal (opencode-sessions-test--new-session-directory '(4)) "/tmp/chosen/"))
+    (opencode-sessions-test--goto "g1")
+    (should (equal (opencode-sessions-test--new-session-directory) "/tmp/chosen/")))
+  (with-temp-buffer
+    (let ((opencode-sessions--tracker (opencode-sessions--tracker-create)))
+      (opencode-sessions-mode)
+      (should (equal (opencode-sessions-test--new-session-directory) "/tmp/chosen/")))))
 
 ;;; Sidebar
 

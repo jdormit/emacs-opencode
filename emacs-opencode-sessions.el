@@ -1,6 +1,7 @@
 ;;; emacs-opencode-sessions.el --- Overview of OpenCode sessions  -*- lexical-binding: t; -*-
 
 (require 'cl-lib)
+(require 'project)
 (require 'subr-x)
 (require 'tabulated-list)
 (require 'emacs-opencode-changes)
@@ -68,8 +69,9 @@ looked up.  RUNNING maps running session IDs to \"busy\" or \"retry\".
 PROMPTS maps pending request IDs to (SESSION-ID . KIND), where KIND is
 `permission' or `question'.  CHANGES maps listed session IDs to what
 they changed, an `opencode-sessions--work'.  PROJECTS maps project IDs to
-display names.  VIEWED maps session IDs to the idle time last reported as
-viewed.  QUEUE lists (SESSION-ID . WORK) for the sessions waiting to have
+display names, and DIRECTORIES maps them to their root directories.
+VIEWED maps session IDs to the idle time last reported as viewed.
+QUEUE lists (SESSION-ID . WORK) for the sessions waiting to have
 their changes looked up, and FETCHING counts the lookups running."
   connection
   (sessions (make-hash-table :test 'equal))
@@ -78,6 +80,7 @@ their changes looked up, and FETCHING counts the lookups running."
   (prompts (make-hash-table :test 'equal))
   (changes (make-hash-table :test 'equal))
   (projects (make-hash-table :test 'equal))
+  (directories (make-hash-table :test 'equal))
   (viewed (make-hash-table :test 'equal))
   (queue nil)
   (fetching 0))
@@ -530,17 +533,18 @@ while no overview buffer is open, since only they show changes."
 ;;; Loading
 
 (defun opencode-sessions--fetch-projects ()
-  "Load the display names of the server's projects."
+  "Load the display names and root directories of the server's projects."
   (let ((tracker opencode-sessions--tracker))
     (opencode-client-projects
      (opencode-sessions--tracker-connection tracker)
      :success (lambda (&rest args)
                 (when (eq tracker opencode-sessions--tracker)
                   (dolist (project (plist-get args :data))
-                    (puthash (alist-get 'id project)
-                             (or (alist-get 'name project)
-                                 (abbreviate-file-name (alist-get 'canonical project)))
-                             (opencode-sessions--table 'projects)))
+                    (let ((id (alist-get 'id project))
+                          (directory (alist-get 'canonical project)))
+                      (puthash id (or (alist-get 'name project) (abbreviate-file-name directory))
+                               (opencode-sessions--table 'projects))
+                      (puthash id directory (opencode-sessions--table 'directories))))
                   (opencode-sessions--changed)))
      :error #'ignore)))
 
@@ -1235,12 +1239,32 @@ then the directory."
   (clrhash opencode-sessions--flagged)
   (tabulated-list-print t))
 
-(defun opencode-sessions-new ()
-  "Start a new session in the project of the session at point."
-  (interactive)
+(defun opencode-sessions--directory-at-point ()
+  "Return the root directory of the project at point.
+Until the project's root is known, return the directory of the session at
+point, or of any session in the project.  Return nil outside a project,
+including in the group of sessions outside projects."
+  (when-let* ((project (opencode-sessions--project-at-point))
+              ((not (equal project "global"))))
+    (let ((sessions (opencode-sessions--table 'sessions)))
+      (or (gethash project (opencode-sessions--table 'directories))
+          (when-let* ((id (tabulated-list-get-id)))
+            (opencode-sessions--directory (gethash id sessions)))
+          (cl-some (lambda (info)
+                     (and (equal (alist-get 'projectID info) project)
+                          (opencode-sessions--directory info)))
+                   (hash-table-values sessions))))))
+
+(defun opencode-sessions-new (&optional prompt)
+  "Start a new session in the root directory of the project at point.
+With a prefix argument PROMPT, or outside a project, prompt for the
+project."
+  (interactive "P")
   (let ((default-directory
          (file-name-as-directory
-          (opencode-sessions--directory (opencode-sessions--info-at-point)))))
+          (or (and (not prompt) (opencode-sessions--directory-at-point))
+              (project-prompt-project-dir))))
+        (current-prefix-arg nil))
     (opencode-sessions--select-main-window)
     (call-interactively #'opencode)))
 

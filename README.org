@@ -207,7 +207,7 @@ client.
 | =o=   | Open the session in another window                         |
 | =C-o= | Show the session in another window without selecting it    |
 | =R=   | Rename the session                                         |
-| =c=   | Start a new session in the same project                    |
+| =c=   | New session in the project root (=C-u c=: pick a project)  |
 | =d=   | Flag the session for deletion                              |
 | =a=   | Flag the session for archiving                             |
 | =u=   | Remove the flag (=DEL=: from the previous session)         |
