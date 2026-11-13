@@ -40,6 +40,13 @@ within `opencode-sessions-days'."
   :type '(choice (const left) (const right))
   :group 'emacs-opencode)
 
+(defcustom opencode-sessions-archive-buries-buffer nil
+  "Non-nil means archiving a session from the overview buries its buffer.
+The buffer moves to the end of the buffer list and is replaced in the
+windows showing it."
+  :type 'boolean
+  :group 'emacs-opencode)
+
 (defconst opencode-sessions--page-size 200
   "Number of sessions requested per page while loading the overview.")
 
@@ -1246,6 +1253,14 @@ then the directory."
   (format "%s %d session%s (%s)" verb (length ids) (if (cdr ids) "s" "")
           (mapconcat #'opencode-sessions--title ids ", ")))
 
+(defun opencode-sessions--bury-session-buffer (session-id)
+  "Bury the buffer of SESSION-ID, if any, and replace it in its windows."
+  (when-let* ((buffer (opencode-session--buffer-for-session session-id))
+              ((buffer-live-p buffer)))
+    (dolist (window (get-buffer-window-list buffer nil t))
+      (switch-to-prev-buffer window 'bury))
+    (bury-buffer buffer)))
+
 (defun opencode-sessions--execute-prompt (archives deletes)
   "Return the question confirming archiving ARCHIVES and deleting DELETES."
   (concat (string-join
@@ -1257,8 +1272,9 @@ then the directory."
 
 (defun opencode-sessions-execute ()
   "Archive and delete the flagged sessions, after confirming.
-Deleting also deletes a session's subagent sessions.  The list reloads
-once every request finishes."
+Deleting also deletes a session's subagent sessions.  Archiving buries
+the session's buffer when `opencode-sessions-archive-buries-buffer' is
+non-nil.  The list reloads once every request finishes."
   (interactive)
   (let ((connection (opencode-sessions--connection))
         (tracker opencode-sessions--tracker)
@@ -1282,6 +1298,9 @@ once every request finishes."
                          send
                          :success (lambda (&rest _args)
                                     (remhash id flagged)
+                                    (when (and (equal verb "archive")
+                                               opencode-sessions-archive-buries-buffer)
+                                      (opencode-sessions--bury-session-buffer id))
                                     (when (eq tracker opencode-sessions--tracker)
                                       (if (equal verb "archive")
                                           (opencode-sessions--hide id)

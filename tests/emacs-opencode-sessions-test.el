@@ -925,6 +925,41 @@ A mode line list starting with a symbol is a conditional, so an empty
       (should (zerop (hash-table-count opencode-sessions--flagged)))
       (should (= loads 1)))))
 
+(defun opencode-sessions-test--archive-with-buffer (bury)
+  "Archive session s1, which has a displayed buffer, with burying set to BURY.
+Return the name of the buffer shown in the window that showed s1's buffer."
+  (let ((session-buffer (generate-new-buffer "*OpenCode: s1*"))
+        (other-buffer (generate-new-buffer "other"))
+        (opencode-session--buffers (make-hash-table :test 'equal))
+        (opencode-sessions-archive-buries-buffer bury))
+    (unwind-protect
+        (opencode-sessions-test--in-overview
+            (list (opencode-sessions-test--info "s1"))
+          (puthash "s1" session-buffer opencode-session--buffers)
+          (let ((window (selected-window))
+                (overview (current-buffer)))
+            (save-window-excursion
+              (switch-to-buffer other-buffer)
+              (switch-to-buffer session-buffer)
+              (with-selected-window (split-window)
+                (switch-to-buffer overview)
+                (opencode-sessions-test--goto "s1")
+                (opencode-sessions-flag-archive)
+                (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+                          ((symbol-function 'opencode-sessions--load) #'ignore)
+                          ((symbol-function 'opencode-client-session-archive)
+                           (lambda (_conn _id _archived &rest args)
+                             (funcall (plist-get args :success)))))
+                  (opencode-sessions-execute)))
+              (buffer-name (window-buffer window)))))
+      (kill-buffer session-buffer)
+      (kill-buffer other-buffer))))
+
+(ert-deftest test-opencode-sessions/execute-archive-buries-buffer ()
+  "Archiving buries the session's buffer when `opencode-sessions-archive-buries-buffer' is on."
+  (should (equal (opencode-sessions-test--archive-with-buffer t) "other"))
+  (should (equal (opencode-sessions-test--archive-with-buffer nil) "*OpenCode: s1*")))
+
 (ert-deftest test-opencode-sessions/execute-archive-only-asks-y-or-n ()
   "Archiving alone is reversible, so it asks a short question."
   (opencode-sessions-test--in-overview
