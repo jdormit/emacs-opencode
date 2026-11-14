@@ -208,6 +208,7 @@ client.
 | =C-o= | Show the session in another window without selecting it    |
 | =R=   | Rename the session                                         |
 | =c=   | New session in the project root (=C-u c=: pick a project)  |
+| =v=   | Git status of the session's worktree (Magit or =vc-dir=)   |
 | =d=   | Flag the session for deletion                              |
 | =a=   | Flag the session for archiving                             |
 | =u=   | Remove the flag (=DEL=: from the previous session)         |
@@ -223,7 +224,11 @@ it, so it can be restored.
 
 Under =evil-mode=, these keys work in normal state, except for keys Evil uses
 for motions: =go= opens in another window, =gO= shows a session without
-selecting it, and =gr= reloads.
+selecting it, =gv= shows the Git status, and =gr= reloads.
+
+=v= shows the Git worktree of the project that the session changed most,
+not counting the main one. If there is none, it shows the session's own
+directory.
 
 The overview lists sessions updated in the last =opencode-sessions-days= days
 (default 7), up to =opencode-sessions-max= sessions (default 1000). Running

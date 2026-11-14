@@ -16,6 +16,7 @@
 (declare-function opencode--ensure-session-buffer "emacs-opencode"
                   (session connection &optional on-ready))
 (declare-function opencode "emacs-opencode" (directory))
+(declare-function magit-status-setup-buffer "magit-status" (&optional directory))
 
 (defcustom opencode-sessions-days 7
   "Number of days of top-level sessions the overview lists.
@@ -320,20 +321,22 @@ More urgent sessions come first, then more recently updated ones."
           (setq diff (cons (+ (car counts) (or (car diff) 0))
                            (+ (cdr counts) (or (cdr diff) 0)))))))))
 
+(defun opencode-sessions--root-directories (session-id)
+  "Return the worktrees the listed session SESSION-ID changed, most changed first."
+  (let* ((work (gethash session-id (opencode-sessions--table 'changes)))
+         (stats (and work (opencode-sessions--work-stats work)))
+         (size (lambda (directory)
+                 (let ((counts (alist-get directory stats nil nil #'equal)))
+                   (+ (or (car counts) 0) (or (cdr counts) 0))))))
+    (sort (mapcar #'opencode-changes-root-directory (opencode-sessions--roots session-id))
+          (lambda (a b) (> (funcall size a) (funcall size b))))))
+
 (defun opencode-sessions--format-directory (info)
   "Return where session INFO worked: the worktrees it changed, else its directory.
 When it changed several, the one with the most changed lines comes first."
-  (let* ((work (gethash (alist-get 'id info) (opencode-sessions--table 'changes)))
-         (stats (and work (opencode-sessions--work-stats work)))
-         (size (lambda (root)
-                 (let ((counts (alist-get (opencode-changes-root-directory root) stats
-                                          nil nil #'equal)))
-                   (+ (or (car counts) 0) (or (cdr counts) 0)))))
-         (directories (mapcar (lambda (root)
-                                (abbreviate-file-name
-                                 (directory-file-name (opencode-changes-root-directory root))))
-                              (sort (copy-sequence (opencode-sessions--roots (alist-get 'id info)))
-                                    (lambda (a b) (> (funcall size a) (funcall size b)))))))
+  (let ((directories (mapcar (lambda (directory)
+                               (abbreviate-file-name (directory-file-name directory)))
+                             (opencode-sessions--root-directories (alist-get 'id info)))))
     (cond
      ((cdr directories)
       (propertize (format "%s +%d" (car directories) (length (cdr directories)))
@@ -923,6 +926,7 @@ top, and with it every window showing the buffer."
   "p" #'opencode-sessions-previous
   "R" #'opencode-sessions-rename
   "c" #'opencode-sessions-new
+  "v" #'opencode-sessions-git-status
   "d" #'opencode-sessions-flag-delete
   "a" #'opencode-sessions-flag-archive
   "u" #'opencode-sessions-unmark
@@ -933,13 +937,15 @@ top, and with it every window showing the buffer."
 (defun opencode-sessions--setup-evil ()
   "Bind the overview's commands in Evil's normal state.
 Keys that Evil uses for motions get other bindings: `go' opens in
-another window, `gO' shows without selecting, and `gr' reloads."
+another window, `gO' shows without selecting, `gv' shows the Git
+status, and `gr' reloads."
   (when (fboundp 'evil-define-key*)
     (evil-define-key* 'normal opencode-sessions-mode-map
       (kbd "RET") #'opencode-sessions-open
       (kbd "TAB") #'opencode-sessions-toggle-group
       "go" #'opencode-sessions-open-other-window
       "gO" #'opencode-sessions-display
+      "gv" #'opencode-sessions-git-status
       "R" #'opencode-sessions-rename
       "c" #'opencode-sessions-new
       "d" #'opencode-sessions-flag-delete
@@ -1267,6 +1273,41 @@ project."
         (current-prefix-arg nil))
     (opencode-sessions--select-main-window)
     (call-interactively #'opencode)))
+
+(defun opencode-sessions--linked-worktree-p (directory main)
+  "Return non-nil when DIRECTORY is a linked worktree of the repository at MAIN."
+  (let ((dot-git (expand-file-name ".git" directory)))
+    (when (file-regular-p dot-git)
+      (with-temp-buffer
+        (insert-file-contents dot-git)
+        (and (looking-at "gitdir: \\(.+\\)$")
+             (string-prefix-p (file-truename (expand-file-name ".git/worktrees/" main))
+                              (file-truename (expand-file-name (match-string 1) directory))))))))
+
+(defun opencode-sessions--worktree (info)
+  "Return the worktree session INFO worked in.
+That is the linked worktree of its project that it changed most, or
+else its own directory."
+  (or (when-let* ((main (gethash (alist-get 'projectID info)
+                                 (opencode-sessions--table 'directories))))
+        (cl-find-if (lambda (directory) (opencode-sessions--linked-worktree-p directory main))
+                    (opencode-sessions--root-directories (alist-get 'id info))))
+      (opencode-sessions--directory info)))
+
+(defun opencode-sessions-git-status ()
+  "Show the Git status of the session at point's worktree.
+See `opencode-sessions--worktree' for which worktree.  Use Magit when it
+is available, and `vc-dir' otherwise."
+  (interactive)
+  (let ((directory (file-name-as-directory
+                    (or (opencode-sessions--worktree (opencode-sessions--info-at-point))
+                        (user-error "The session has no directory")))))
+    (unless (file-directory-p directory)
+      (user-error "%s no longer exists" (abbreviate-file-name directory)))
+    (opencode-sessions--select-main-window)
+    (if (fboundp 'magit-status-setup-buffer)
+        (magit-status-setup-buffer directory)
+      (vc-dir directory))))
 
 (defun opencode-sessions--title (id)
   "Return the title of the listed session ID."

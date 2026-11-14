@@ -1108,6 +1108,80 @@ Until the root is known, it starts in the session's directory."
       (opencode-sessions-mode)
       (should (equal (opencode-sessions-test--new-session-directory) "/tmp/chosen/")))))
 
+(defun opencode-sessions-test--git-status (&optional magit)
+  "Run `opencode-sessions-git-status' and return (COMMAND DIRECTORY) it ran.
+With MAGIT non-nil, Magit is available."
+  (let (called)
+    (cl-letf (((symbol-function 'vc-dir)
+               (lambda (dir &rest _) (setq called (list 'vc-dir dir))))
+              ((symbol-function 'magit-status-setup-buffer)
+               (and magit (lambda (dir) (setq called (list 'magit dir))))))
+      (opencode-sessions-git-status))
+    called))
+
+(ert-deftest test-opencode-sessions/git-status-uses-session-worktree ()
+  "Git status shows the linked worktree of the project a session changed most.
+Without one, or before the project's root is known, it shows the
+session's own directory."
+  (let* ((base (file-name-as-directory (file-truename (make-temp-file "oc-git" t))))
+         (main (expand-file-name "main/" base))
+         (other (expand-file-name "other/" base))
+         (worktree (lambda (name)
+                     (let ((dir (expand-file-name (concat name "/") base)))
+                       (make-directory dir)
+                       (with-temp-file (expand-file-name ".git" dir)
+                         (insert "gitdir: " main ".git/worktrees/" name "\n"))
+                       dir)))
+         small big moved)
+    (make-directory (expand-file-name ".git" main) t)
+    (make-directory (expand-file-name ".git" other) t)
+    (setq small (funcall worktree "small")
+          big (funcall worktree "big")
+          moved (funcall worktree "moved"))
+    (unwind-protect
+        (opencode-sessions-test--in-overview
+            (list (opencode-sessions-test--info "s1" :directory (directory-file-name main))
+                  (opencode-sessions-test--info "s2" :directory (directory-file-name main))
+                  (opencode-sessions-test--info "s3" :directory (directory-file-name moved))
+                  (opencode-sessions-test--info "s4" :directory (directory-file-name main)))
+          (puthash "p1" (directory-file-name main) (opencode-sessions-test--table 'directories))
+          (opencode-sessions-test--set-changes "s1" (list main nil '(100 . 0)))
+          (opencode-sessions-test--set-changes "s2" (list main nil '(100 . 0))
+                                               (list small nil '(1 . 0))
+                                               (list big nil '(5 . 5)))
+          (opencode-sessions-test--set-changes "s3" (list main nil '(1 . 0)))
+          (opencode-sessions-test--set-changes "s4" (list other nil '(100 . 0))
+                                               (list main nil '(1 . 0)))
+          (opencode-sessions-test--goto "s1")
+          (should (equal (opencode-sessions-test--git-status) (list 'vc-dir main)))
+          (opencode-sessions-test--goto "s2")
+          (should (equal (opencode-sessions-test--git-status) (list 'vc-dir big)))
+          (opencode-sessions-test--goto "s3")
+          (should (equal (opencode-sessions-test--git-status) (list 'vc-dir moved)))
+          (opencode-sessions-test--goto "s4")
+          (should (equal (opencode-sessions-test--git-status) (list 'vc-dir main)))
+          (remhash "p1" (opencode-sessions-test--table 'directories))
+          (opencode-sessions-test--goto "s2")
+          (should (equal (opencode-sessions-test--git-status) (list 'vc-dir main))))
+      (delete-directory base t))))
+
+(ert-deftest test-opencode-sessions/git-status-prefers-magit ()
+  "Git status uses Magit when it is available."
+  (let ((dir (file-name-as-directory (file-truename (make-temp-file "oc-main" t)))))
+    (unwind-protect
+        (opencode-sessions-test--in-overview
+            (list (opencode-sessions-test--info "s1" :directory (directory-file-name dir)))
+          (opencode-sessions-test--goto "s1")
+          (should (equal (opencode-sessions-test--git-status t) (list 'magit dir))))
+      (delete-directory dir))))
+
+(ert-deftest test-opencode-sessions/git-status-missing-directory-errors ()
+  "Git status signals a user error when the worktree no longer exists."
+  (opencode-sessions-test--in-overview
+      (list (opencode-sessions-test--info "s1" :directory "/nonexistent/oc-gone"))
+    (opencode-sessions-test--goto "s1")
+    (should-error (opencode-sessions-test--git-status) :type 'user-error)))
+
 ;;; Sidebar
 
 (defun opencode-sessions-test--row-lines (id)
@@ -1281,6 +1355,7 @@ Until the root is known, it starts in the session's directory."
       (should (eq (key-binding "a") #'opencode-sessions-flag-archive))
       (should (eq (key-binding "u") #'opencode-sessions-unmark))
       (should (eq (key-binding "go") #'opencode-sessions-open-other-window))
+      (should (eq (key-binding "gv") #'opencode-sessions-git-status))
       (should (eq (key-binding (kbd "TAB")) #'opencode-sessions-toggle-group))
       (should (eq (key-binding (kbd "RET")) #'opencode-sessions-open))
       (should (string-prefix-p "evil-" (symbol-name (key-binding "k"))))
