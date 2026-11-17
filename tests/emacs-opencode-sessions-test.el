@@ -1342,6 +1342,33 @@ session's own directory."
           (let ((kill-buffer-hook nil))
             (kill-buffer buffer)))))))
 
+(ert-deftest test-opencode-sessions/sidebar-new-session-in-project-at-point ()
+  "From the sidebar, a new session starts in the project at point, in the main window."
+  (opencode-sessions-test--with-tracker
+      (list (opencode-sessions-test--info "s1" :directory "/tmp/p1"))
+    (let* ((main (selected-window))
+           (original (buffer-local-value 'default-directory (window-buffer main))))
+      (delete-other-windows)
+      (with-current-buffer (window-buffer main)
+        (setq-local default-directory "/tmp/elsewhere/"))
+      (unwind-protect
+          (cl-letf (((symbol-function 'opencode-sessions--ensure-tracking) #'ignore))
+            (opencode-sessions-sidebar)
+            (opencode-sessions--render)
+            (opencode-sessions-test--goto "s1")
+            (let (started-in)
+              (cl-letf (((symbol-function 'opencode)
+                         (lambda (dir)
+                           (interactive (list default-directory))
+                           (setq started-in (list dir (selected-window))))))
+                (opencode-sessions-new))
+              (should (equal started-in (list "/tmp/p1/" main)))))
+        (with-current-buffer (window-buffer main)
+          (setq-local default-directory original))
+        (when-let* ((buffer (get-buffer opencode-sessions--sidebar-buffer-name)))
+          (let ((kill-buffer-hook nil))
+            (kill-buffer buffer)))))))
+
 (ert-deftest test-opencode-sessions/evil-normal-state-bindings ()
   "Under Evil, the overview's commands are reachable from normal state."
   (skip-unless (require 'evil nil t))

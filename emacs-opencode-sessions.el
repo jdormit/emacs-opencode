@@ -1266,13 +1266,13 @@ including in the group of sessions outside projects."
 With a prefix argument PROMPT, or outside a project, prompt for the
 project."
   (interactive "P")
-  (let ((default-directory
-         (file-name-as-directory
-          (or (and (not prompt) (opencode-sessions--directory-at-point))
-              (project-prompt-project-dir))))
-        (current-prefix-arg nil))
+  (let ((directory (file-name-as-directory
+                    (or (and (not prompt) (opencode-sessions--directory-at-point))
+                        (project-prompt-project-dir)))))
     (opencode-sessions--select-main-window)
-    (call-interactively #'opencode)))
+    (let ((default-directory directory)
+          (current-prefix-arg nil))
+      (call-interactively #'opencode))))
 
 (defun opencode-sessions--linked-worktree-p (directory main)
   "Return non-nil when DIRECTORY is a linked worktree of the repository at MAIN."
