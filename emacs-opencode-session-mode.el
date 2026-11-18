@@ -33,6 +33,14 @@ one returns a completion result."
   :type '(repeat function)
   :group 'emacs-opencode)
 
+(defcustom opencode-session-directory-change-hook nil
+  "Hook run in a session buffer after its `default-directory' changes.
+This happens when the session moves to another directory, such as a
+worktree.  Use it to refresh state that depends on the directory, like
+a cached project name in the mode line."
+  :type 'hook
+  :group 'emacs-opencode)
+
 (defface opencode-session-input-prompt-face
   '((t :inherit font-lock-constant-face))
   "Face used for the session input prompt."
@@ -1045,8 +1053,11 @@ tool part must not drop output fetched for an open drawer."
     (unless opencode-session--session
       (setq opencode-session--session (opencode-session-create :id (alist-get 'id info))))
     (opencode-session--apply-session-info opencode-session--session info)
-    (when-let* ((directory (opencode-session-directory opencode-session--session)))
-      (setq default-directory (file-name-as-directory directory)))
+    (when-let* ((directory (opencode-session-directory opencode-session--session))
+                (directory (file-name-as-directory directory))
+                ((not (equal directory default-directory))))
+      (setq default-directory directory)
+      (run-hooks 'opencode-session-directory-change-hook))
     (when-let* ((agent (alist-get 'agent info)))
       (opencode-session--set-agent-from-server agent))
     (when model

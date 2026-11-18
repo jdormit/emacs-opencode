@@ -343,6 +343,7 @@ Options and faces are in the =emacs-opencode= customize group. Common options:
 | =opencode-session-spinner-frames=        | =(list ...)=      | Spinner animation frames                 |
 | =opencode-session-spinner-interval=      | =0.1=             | Seconds between spinner frames           |
 | =opencode-session-header-retry-message-max= | =60=           | Max length for retry messages in header  |
+| =opencode-session-directory-change-hook= | =nil=             | Runs after a moved session's buffer changes directory |
 
 SSE and diagnostics options:
 

@@ -361,6 +361,29 @@
         (should (equal default-directory worktree))
         (should (opencode-handlers-test--known-directory-p connection worktree))))))
 
+(ert-deftest test-opencode-handlers/move-runs-directory-change-hook ()
+  "Moving a session runs the directory change hook once, in its buffer."
+  (opencode-handlers-test--with-directories (main worktree)
+    (opencode-handlers-test--with-session
+      (let* ((connection (opencode-handlers-test--shared-connection main))
+             (calls nil)
+             (opencode-session-directory-change-hook
+              (list (lambda () (push (cons (current-buffer) default-directory) calls))))
+             (move (lambda ()
+                     (with-temp-buffer
+                       (opencode-sse--dispatch
+                        "session.moved"
+                        (opencode-handlers-test--event
+                         "session.moved"
+                         `((sessionID . "s1")
+                           (location . ((directory . ,(directory-file-name worktree))))))
+                        (list :connection connection))))))
+        (setq-local default-directory main)
+        (cl-letf (((symbol-function 'opencode-session--load-catalogs) #'ignore))
+          (funcall move)
+          (funcall move))
+        (should (equal calls (list (cons (current-buffer) worktree))))))))
+
 (ert-deftest test-opencode-handlers/move-loads-new-directory-agents ()
   "After a move, the buffer's agents come from the new directory."
   (opencode-handlers-test--with-directories (main worktree)
