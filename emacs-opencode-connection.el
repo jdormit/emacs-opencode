@@ -277,6 +277,14 @@ Concurrent callers share one startup operation."
     (when-let* ((buffer (process-buffer process))) (kill-buffer buffer))
     (setf (opencode-connection-process connection) nil)))
 
+(defun opencode-connection-call-in-directory (directory function &rest args)
+  "Call FUNCTION with ARGS while `default-directory' is DIRECTORY.
+FUNCTION runs in a hidden buffer.  Async callbacks run in whatever
+buffer is current, and binding its directory would undo changes that
+FUNCTION makes to it."
+  (with-current-buffer (get-buffer-create " *opencode-callback*")
+    (let ((default-directory directory))
+      (apply function args))))
 
 (provide 'emacs-opencode-connection)
 

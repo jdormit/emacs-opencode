@@ -102,16 +102,16 @@ META currently carries `:connection' (the originating connection)."
 
 META is a plist of event metadata.  It carries `:connection', the
 connection on which the event arrived, so handlers can route
-responses back to the correct OpenCode server."
+responses back to the correct OpenCode server.  Handlers run with
+`default-directory' set to the event's directory."
   (let ((handlers (alist-get event opencode-sse--handlers nil nil #'string=))
-        (default-directory
-         (if-let* ((directory (alist-get 'directory (alist-get 'location data))))
-             (file-name-as-directory directory)
-           default-directory)))
+        (directory (if-let* ((directory (alist-get 'directory (alist-get 'location data))))
+                       (file-name-as-directory directory)
+                     default-directory)))
     (dolist (handler handlers)
       ;; One failing handler must not drop the rest of the stream's events.
       (condition-case-unless-debug err
-          (funcall handler event data meta)
+          (opencode-connection-call-in-directory directory handler event data meta)
         (error
          (message "OpenCode: error handling %s: %s" event (error-message-string err)))))))
 

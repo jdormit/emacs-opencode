@@ -527,6 +527,24 @@
     (opencode-sse--dispatch "meta.event" nil '(:connection conn-a))
     (should (eq (plist-get received-meta :connection) 'conn-a))))
 
+(ert-deftest test-opencode-sse/dispatch-keeps-handler-directory-changes ()
+  "A handler's change to the dispatching buffer's directory sticks."
+  (let ((opencode-sse--handlers nil)
+        seen)
+    (with-temp-buffer
+      (setq default-directory "/tmp/before/")
+      (let ((buffer (current-buffer)))
+        (opencode-sse-register-handler
+         "dir.event"
+         (lambda (&rest _)
+           (push default-directory seen)
+           (with-current-buffer buffer
+             (setq default-directory "/tmp/after/"))))
+        (opencode-sse--dispatch "dir.event" '((location . ((directory . "/tmp/event")))))
+        (should (equal default-directory "/tmp/after/"))
+        (opencode-sse--dispatch "dir.event" nil)
+        (should (equal seen '("/tmp/after/" "/tmp/event/")))))))
+
 (ert-deftest test-opencode-sse/dispatch-meta-defaults-nil ()
   "Dispatch passes nil META when none is provided."
   (let ((opencode-sse--handlers nil)

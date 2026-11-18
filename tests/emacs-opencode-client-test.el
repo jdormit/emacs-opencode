@@ -77,6 +77,28 @@ last `request' call made during BODY."
                      (url-hexify-string (directory-file-name
                                          (file-truename default-directory))))))))
 
+(ert-deftest test-opencode-client/callback-keeps-buffer-directory-changes ()
+  "A callback's change to the current buffer's directory sticks."
+  (let ((conn (opencode-client-test--connection "/tmp/project/"))
+        seen)
+    (opencode-client-test--with-captured-request _url args
+      (opencode-request conn 'GET "/api/agent"
+                        :success (lambda (&rest _)
+                                   (setq seen default-directory)))
+      (with-temp-buffer
+        (let ((buffer (current-buffer)))
+          (setq default-directory "/tmp/before/")
+          (funcall (plist-get args :success)
+                   :data nil)
+          (should (equal seen "/tmp/project/"))
+          (should (equal (buffer-local-value 'default-directory buffer) "/tmp/before/"))
+          (opencode-request conn 'GET "/api/agent"
+                            :success (lambda (&rest _)
+                                       (with-current-buffer buffer
+                                         (setq default-directory "/tmp/after/"))))
+          (funcall (plist-get args :success) :data nil)
+          (should (equal default-directory "/tmp/after/")))))))
+
 (ert-deftest test-opencode-client/request-directory-header-with-json ()
   "Directory header coexists with the JSON content type header."
   (let ((conn (opencode-client-test--connection "/tmp/project/")))

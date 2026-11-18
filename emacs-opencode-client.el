@@ -100,8 +100,8 @@ server routes requests to the right workspace."
         (setq args
               (plist-put args key
                          (lambda (&rest callback-args)
-                           (let ((default-directory directory))
-                             (apply callback callback-args)))))))
+                           (apply #'opencode-connection-call-in-directory
+                                  directory callback callback-args))))))
     (apply
      #'request
      url
